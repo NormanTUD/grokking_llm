@@ -6,6 +6,7 @@
 #     "scipy",
 #     "plotly",
 #     "gradio",
+#     "pandas",
 # ]
 # ///
 """
@@ -30,15 +31,22 @@ Usage:
 
 import warnings
 import math
+import json
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 warnings.filterwarnings("ignore")
+
+# Directory to save training logs
+SAVE_DIR = "training_logs"
+os.makedirs(SAVE_DIR, exist_ok=True)
 
 
 # =============================================================================
@@ -140,13 +148,21 @@ class ModularAdditionTransformer(nn.Module):
 
 
 # =============================================================================
-# Training
+# Training with Live Progress
 # =============================================================================
 
 def train_model(P: int = 113, d_model: int = 128, n_heads: int = 4, d_mlp: int = 512,
                 train_frac: float = 0.3, epochs: int = 30000, lr: float = 1e-3,
-                weight_decay: float = 1.0, progress_cb=None) -> tuple:
-    """Train a model on modular addition until it groks."""
+                weight_decay: float = 1.0, progress_cb=None, progress=None) -> tuple:
+    """Train a model on modular addition until it groks.
+
+    Args:
+        progress_cb: callback for log messages
+        progress: Gradio progress object for live progress bar updates
+
+    Returns:
+        (model, train_losses, test_accs, metrics_table)
+    """
     model = ModularAdditionTransformer(P, d_model, n_heads, d_mlp)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -168,6 +184,7 @@ def train_model(P: int = 113, d_model: int = 128, n_heads: int = 4, d_mlp: int =
     best_test_acc = 0.0
     train_losses = []
     test_accs = []
+    metrics_table = []
 
     def update(msg):
         if progress_cb:
@@ -194,14 +211,34 @@ def train_model(P: int = 113, d_model: int = 128, n_heads: int = 4, d_mlp: int =
             test_accs.append((epoch, test_acc))
             best_test_acc = max(best_test_acc, test_acc)
 
+            metrics_table.append({
+                "epoch": epoch,
+                "train_loss": round(loss.item(), 6),
+                "train_acc": round(train_acc, 4),
+                "test_acc": round(test_acc, 4),
+                "best_test_acc": round(best_test_acc, 4),
+            })
+
+            # Update Gradio progress bar with actual percentage and info
+            if progress is not None:
+                pct = (epoch + 1) / epochs
+                progress(pct, desc=f"Epoch {epoch}/{epochs} | loss={loss.item():.4f} | test_acc={test_acc:.3f}")
+
             update(f"Epoch {epoch}: loss={loss.item():.4f}, train_acc={train_acc:.3f}, test_acc={test_acc:.3f}")
 
             if test_acc > 0.99:
                 update(f"Grokked at epoch {epoch}!")
+                if progress is not None:
+                    progress(1.0, desc=f"Grokked at epoch {epoch}!")
                 break
 
+    # Save metrics table to CSV
+    df = pd.DataFrame(metrics_table)
+    csv_path = os.path.join(SAVE_DIR, "training_metrics.csv")
+    df.to_csv(csv_path, index=False)
+
     model.eval()
-    return model, train_losses, test_accs
+    return model, train_losses, test_accs, metrics_table
 
 
 # =============================================================================
@@ -263,7 +300,6 @@ class CircuitDiscoverer:
 
         norms = np.zeros(P // 2 + 1)
         for k in range(P // 2 + 1):
-            # Project each embedding dimension onto cos(wk*x) and sin(wk*x)
             cos_proj = cos_basis[k] @ W_E  # (d_model,)
             sin_proj = sin_basis[k] @ W_E  # (d_model,)
             norms[k] = np.sqrt(np.sum(cos_proj**2) + np.sum(sin_proj**2))
@@ -284,7 +320,6 @@ class CircuitDiscoverer:
 
         norms = np.zeros(P // 2 + 1)
         for k in range(P // 2 + 1):
-            # Project logit dimension onto cos/sin
             cos_proj = cos_basis[k] @ W_L  # (d_mlp,)
             sin_proj = sin_basis[k] @ W_L  # (d_mlp,)
             norms[k] = np.sqrt(np.sum(cos_proj**2) + np.sum(sin_proj**2))
@@ -315,20 +350,16 @@ class CircuitDiscoverer:
     def verify_trig_identities(self, key_freqs: list[int]) -> dict:
         """
         Verify that MLP computes cos(wk(a+b)) and sin(wk(a+b)).
-        Per Section 4.2, Table 1: project MLP activations onto W_L directions
-        and check they match trig identities.
         """
         P = self.P
         model = self.model
 
-        # Get W_L directions for each key frequency
         W_out = model.mlp_out.weight.detach().cpu().numpy()
         W_U = model.unembed.weight.detach().cpu().numpy()
         W_L = W_U @ W_out  # (P, d_mlp)
 
         cos_basis, sin_basis = self._fourier_basis()
 
-        # Get MLP activations for all inputs
         all_a = torch.arange(P).repeat_interleave(P)
         all_b = torch.arange(P).repeat(P)
         with torch.no_grad():
@@ -339,8 +370,6 @@ class CircuitDiscoverer:
         for k in key_freqs:
             wk = 2 * np.pi * k / P
 
-            # Get u_k and v_k: directions in neuron space for cos(wk*c) and sin(wk*c)
-            # u_k = W_L^T @ cos(wk) normalized
             cos_wk = cos_basis[k]  # (P,)
             sin_wk = sin_basis[k]  # (P,)
 
@@ -349,21 +378,17 @@ class CircuitDiscoverer:
             u_k = u_k / (np.linalg.norm(u_k) + 1e-10)
             v_k = v_k / (np.linalg.norm(v_k) + 1e-10)
 
-            # Project MLP activations onto these directions
             cos_proj = mlp_acts @ u_k  # (P*P,)
             sin_proj = mlp_acts @ v_k  # (P*P,)
 
-            # Ground truth: cos(wk(a+b)) and sin(wk(a+b))
             a_vals = all_a.numpy()
             b_vals = all_b.numpy()
             true_cos = np.cos(wk * (a_vals + b_vals))
             true_sin = np.sin(wk * (a_vals + b_vals))
 
-            # Fit: cos_proj ~ alpha * true_cos
             alpha_cos = np.dot(cos_proj, true_cos) / (np.dot(true_cos, true_cos) + 1e-10)
             alpha_sin = np.dot(sin_proj, true_sin) / (np.dot(true_sin, true_sin) + 1e-10)
 
-            # Fraction of variance explained
             residual_cos = cos_proj - alpha_cos * true_cos
             fve_cos = 1.0 - np.var(residual_cos) / (np.var(cos_proj) + 1e-10)
 
@@ -384,7 +409,6 @@ class CircuitDiscoverer:
     def verify_logit_approximation(self, key_freqs: list[int]) -> tuple[float, np.ndarray]:
         """
         Verify logits ~ sum_k alpha_k * cos(wk(a+b-c)).
-        Per Section 4.2: this should explain >95% of variance.
         """
         P = self.P
         model = self.model
@@ -396,23 +420,8 @@ class CircuitDiscoverer:
 
         a_vals = all_a.numpy()
         b_vals = all_b.numpy()
-        c_vals = np.arange(P)
 
-        # Build design matrix: for each (a,b,c), compute cos(wk(a+b-c)) for each k
         n_samples = P * P
-        X = np.zeros((n_samples * P, len(key_freqs)))
-        y = logits.flatten()
-
-        for i, k in enumerate(key_freqs):
-            wk = 2 * np.pi * k / P
-            for c in range(P):
-                cos_vals = np.cos(wk * (a_vals + b_vals - c))
-                X[c * n_samples:(c + 1) * n_samples, i] = cos_vals
-
-        # Reshape logits to match
-        y = logits.T.flatten()  # (P * P*P) - reorder to match X
-
-        # Actually, let's do it properly
         X = np.zeros((n_samples, P, len(key_freqs)))
         for i, k in enumerate(key_freqs):
             wk = 2 * np.pi * k / P
@@ -424,10 +433,8 @@ class CircuitDiscoverer:
         X_flat = X.reshape(-1, len(key_freqs))
         y_flat = logits.flatten()
 
-        # Least squares fit
         alphas, _, _, _ = np.linalg.lstsq(X_flat, y_flat, rcond=None)
 
-        # Compute FVE
         y_pred = X_flat @ alphas
         ss_res = np.sum((y_flat - y_pred) ** 2)
         ss_tot = np.sum((y_flat - y_flat.mean()) ** 2)
@@ -438,7 +445,6 @@ class CircuitDiscoverer:
     def assign_neurons_to_frequencies(self, key_freqs: list[int]) -> dict:
         """
         Per Section 4.3: most neurons compute degree-2 polynomials of a single frequency.
-        Assign each neuron to its best-matching frequency.
         """
         P = self.P
         model = self.model
@@ -460,8 +466,6 @@ class CircuitDiscoverer:
 
             for k in key_freqs:
                 wk = 2 * np.pi * k / P
-                # Degree-2 polynomial basis: 1, cos(wk*a), sin(wk*a), cos(wk*b), sin(wk*b),
-                # cos(wk*a)*cos(wk*b), sin(wk*a)*sin(wk*b), cos(wk*a)*sin(wk*b), sin(wk*a)*cos(wk*b)
                 basis = np.column_stack([
                     np.ones(len(a_vals)),
                     np.cos(wk * a_vals), np.sin(wk * a_vals),
@@ -498,7 +502,6 @@ class CircuitDiscoverer:
 
         for a in range(P):
             for b in range(P):
-                # Compute logits using discovered formula
                 logits = np.zeros(P)
                 for i, k in enumerate(key_freqs):
                     wk = 2 * np.pi * k / P
@@ -601,23 +604,18 @@ def ablation_test(model: ModularAdditionTransformer, key_freqs: list[int]) -> di
     all_targets = (all_a + all_b) % P
 
     with torch.no_grad():
-        # Baseline accuracy
         logits = model(all_a, all_b)
         preds = logits.argmax(dim=-1)
         baseline_acc = (preds == all_targets).float().mean().item()
 
     results = {"baseline_accuracy": baseline_acc}
 
-    # Ablate key frequencies from logits (should destroy performance)
     with torch.no_grad():
-        logits_np = model(all_a, all_b).cpu().numpy()  # (P*P, P)
+        logits_np = model(all_a, all_b).cpu().numpy()
 
-    # 2D DFT over inputs, then ablate key frequency components
-    P = model.P
     a_vals = all_a.numpy()
     b_vals = all_b.numpy()
 
-    # Reshape logits to (P, P, P) for 2D DFT over (a, b)
     logit_cube = logits_np.reshape(P, P, P)
 
     # DFT over first two axes
@@ -637,11 +635,9 @@ def ablation_test(model: ModularAdditionTransformer, key_freqs: list[int]) -> di
     acc_without_key = (preds_ablated_key == targets_np).mean()
     results["accuracy_without_key_freqs"] = float(acc_without_key)
 
-    # Ablate everything EXCEPT key frequencies (should preserve or improve)
+    # Ablate everything EXCEPT key frequencies (should preserve performance)
     logit_fft_restricted = np.zeros_like(logit_fft)
-    # Keep DC component
     logit_fft_restricted[0, 0, :] = logit_fft[0, 0, :]
-    # Keep key frequency components
     for k in key_freqs:
         logit_fft_restricted[k, :, :] = logit_fft[k, :, :]
         logit_fft_restricted[:, k, :] = logit_fft[:, k, :]
@@ -671,547 +667,345 @@ def ablation_test(model: ModularAdditionTransformer, key_freqs: list[int]) -> di
 
 
 # =============================================================================
-# Plotly Visualizations
+# Visualization Helpers (Plotly)
 # =============================================================================
 
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
 
 
-def viz_embedding_on_circle(model: ModularAdditionTransformer, key_freqs: list[int]) -> go.Figure:
-    """
-    Visualize how the embedding maps tokens onto the unit circle.
-    Per Nanda et al. (2023) Section 4.1: W_E maps inputs to sin/cos at key frequencies.
-    """
-    P = model.P
-    W_E = model.embed.weight[:P].detach().cpu().numpy()  # (P, d_model)
-
-    cos_basis = np.zeros((P,))
-    sin_basis = np.zeros((P,))
-
+def make_training_plot(train_losses: list, test_accs: list) -> go.Figure:
+    """Create a live training progress plot with loss and test accuracy."""
     fig = make_subplots(
-        rows=1, cols=min(len(key_freqs), 3),
-        subplot_titles=[f"Frequency k={k} (w={2*np.pi*k}/{P:.0f})" for k in key_freqs[:3]],
-        specs=[[{"type": "polar"}] * min(len(key_freqs), 3)],
+        rows=2, cols=1,
+        subplot_titles=("Training Loss", "Test Accuracy"),
+        vertical_spacing=0.12,
     )
-
-    colors = px.colors.qualitative.Set1
-    for idx, k in enumerate(key_freqs[:3]):
-        wk = 2 * np.pi * k / P
-        # Project embedding onto cos(wk) and sin(wk) directions
-        cos_vec = np.cos(wk * np.arange(P))
-        sin_vec = np.sin(wk * np.arange(P))
-
-        # Project each embedding dimension
-        cos_proj = W_E @ (W_E.T @ cos_vec) / (np.linalg.norm(W_E.T @ cos_vec) + 1e-10)
-        sin_proj = W_E @ (W_E.T @ sin_vec) / (np.linalg.norm(W_E.T @ sin_vec) + 1e-10)
-
-        # Simpler: just use the Fourier components directly
-        cos_component = cos_vec @ W_E  # (d_model,) - how much cos(wk*x) is in each dim
-        sin_component = sin_vec @ W_E  # (d_model,)
-
-        # For each token, compute its angle on the circle
-        angles = np.arctan2(sin_vec, cos_vec) * 180 / np.pi  # True angles
-        radii = np.ones(P)
-
-        # Color by token value
-        fig.add_trace(go.Scatterpolar(
-            r=radii,
-            theta=(wk * np.arange(P) * 180 / np.pi) % 360,
-            mode="markers+text",
-            marker=dict(size=6, color=np.arange(P), colorscale="Viridis", showscale=(idx == 0)),
-            text=[str(i) if i % 10 == 0 else "" for i in range(P)],
-            textposition="top center",
-            textfont=dict(size=7),
-            name=f"k={k}",
-            hovertemplate="Token %{text}<br>Angle: %{theta:.1f} deg<extra></extra>",
-        ), row=1, col=idx + 1)
-
-    fig.update_layout(
-        title="Embedding on Circle: tokens mapped to rotations at key frequencies",
-        height=400,
-        showlegend=False,
-    )
-    return fig
-
-
-def viz_fourier_spectra(circuit: DiscoveredCircuit) -> go.Figure:
-    """Visualize Fourier norms of W_E and W_L."""
-    fig = make_subplots(rows=1, cols=2,
-                        subplot_titles=["Embedding W_E Fourier Norms", "Neuron-Logit W_L Fourier Norms"])
-
-    n = len(circuit.embedding_fourier_norms)
-    x = list(range(n))
-
-    # Highlight key frequencies
-    colors_embed = ['red' if i in circuit.key_frequencies else '#3498db' for i in x]
-    colors_wl = ['red' if i in circuit.key_frequencies else '#2ecc71' for i in x]
-
-    fig.add_trace(go.Bar(
-        x=x, y=circuit.embedding_fourier_norms,
-        marker_color=colors_embed, opacity=0.8,
-        hovertemplate="Freq %{x}: norm=%{y:.3f}<extra></extra>",
-    ), row=1, col=1)
-
-    fig.add_trace(go.Bar(
-        x=x, y=circuit.wl_fourier_norms,
-        marker_color=colors_wl, opacity=0.8,
-        hovertemplate="Freq %{x}: norm=%{y:.3f}<extra></extra>",
-    ), row=1, col=2)
-
-    fig.update_layout(
-        title="Fourier Sparsity (red = key frequencies used by the circuit)",
-        height=350, showlegend=False,
-    )
-    return fig
-
-
-def viz_neuron_activations(model: ModularAdditionTransformer, key_freqs: list[int]) -> go.Figure:
-    """
-    Visualize MLP neuron activations as heatmaps over (a, b).
-    Per Section 4.1: neurons are periodic with key frequencies.
-    """
-    P = model.P
-    all_a = torch.arange(P).repeat_interleave(P)
-    all_b = torch.arange(P).repeat(P)
-
-    with torch.no_grad():
-        mlp_acts, _ = model.get_mlp_activations(all_a, all_b)
-    mlp_acts = mlp_acts.cpu().numpy()  # (P*P, d_mlp)
-
-    # Find most periodic neurons
-    neuron_periodicities = []
-    for neuron_idx in range(min(model.d_mlp, 100)):
-        acts = mlp_acts[:, neuron_idx].reshape(P, P)
-        # 2D FFT
-        fft = np.fft.fft2(acts)
-        power = np.abs(fft) ** 2
-        power[0, 0] = 0  # remove DC
-        max_freq = np.unravel_index(np.argmax(power), power.shape)
-        max_power = power[max_freq]
-        total_power = power.sum()
-        neuron_periodicities.append((neuron_idx, max_power / (total_power + 1e-10), max_freq))
-
-    # Sort by periodicity strength
-    neuron_periodicities.sort(key=lambda x: x[1], reverse=True)
-
-    # Show top 4 most periodic neurons
-    fig = make_subplots(rows=2, cols=2,
-                        subplot_titles=[f"Neuron {n[0]} (periodicity={n[1]:.2f}, freq~{n[2]})"
-                                       for n in neuron_periodicities[:4]])
-
-    for idx, (neuron_idx, _, _) in enumerate(neuron_periodicities[:4]):
-        acts = mlp_acts[:, neuron_idx].reshape(P, P)
-        row, col = idx // 2 + 1, idx % 2 + 1
-        fig.add_trace(go.Heatmap(
-            z=acts, colorscale="RdBu", zmid=0,
-            hovertemplate="a=%{y}, b=%{x}: act=%{z:.3f}<extra></extra>",
-            showscale=(idx == 0),
-        ), row=row, col=col)
-
-    fig.update_layout(
-        title="Most Periodic MLP Neurons (activations over all (a,b) pairs)",
-        height=600, width=650,
-    )
-    return fig
-
-
-def viz_logit_structure(model: ModularAdditionTransformer, key_freqs: list[int]) -> go.Figure:
-    """
-    Visualize the logit structure: cos(wk(a+b-c)) constructive interference.
-    Per Section 4.2 and Appendix B.
-    """
-    P = model.P
-    all_a = torch.arange(P).repeat_interleave(P)
-    all_b = torch.arange(P).repeat(P)
-
-    with torch.no_grad():
-        logits = model(all_a, all_b).cpu().numpy()
-
-    # Pick a specific example
-    a_example, b_example = 17, 42
-    true_answer = (a_example + b_example) % P
-    example_logits = logits[a_example * P + b_example]  # (P,)
-
-    fig = make_subplots(rows=2, cols=1,
-                        subplot_titles=[
-                            f"Logits for a={a_example}, b={b_example} (true answer: {true_answer})",
-                            "Constructive Interference: sum of cos(wk(a+b-c))"
-                        ])
-
-    # Actual logits
-    c_vals = np.arange(P)
-    fig.add_trace(go.Bar(
-        x=c_vals.tolist(), y=example_logits.tolist(),
-        marker_color=['red' if c == true_answer else '#3498db' for c in c_vals],
-        opacity=0.8,
-        hovertemplate="c=%{x}: logit=%{y:.3f}<extra></extra>",
-    ), row=1, col=1)
-
-    # Reconstructed from key frequencies
-    reconstructed = np.zeros(P)
-    for k in key_freqs:
-        wk = 2 * np.pi * k / P
-        cos_wave = np.cos(wk * (a_example + b_example - c_vals))
-        reconstructed += cos_wave
-
-    fig.add_trace(go.Bar(
-        x=c_vals.tolist(), y=reconstructed.tolist(),
-        marker_color=['red' if c == true_answer else '#2ecc71' for c in c_vals],
-        opacity=0.8,
-        hovertemplate="c=%{x}: sum_cos=%{y:.3f}<extra></extra>",
-    ), row=2, col=1)
-
-    fig.update_layout(
-        title=f"Logit Structure: constructive interference at c*=(a+b) mod {P}",
-        height=500, showlegend=False,
-    )
-    return fig
-
-
-def viz_trig_identities(model: ModularAdditionTransformer, trig_results: dict, P: int) -> go.Figure:
-    """Visualize how well the MLP computes trig identities."""
-    freqs = sorted(trig_results.keys())
-    n_freqs = len(freqs)
-
-    fig = make_subplots(rows=1, cols=2,
-                        subplot_titles=["FVE: cos(wk(a+b))", "FVE: sin(wk(a+b))"])
-
-    fve_cos = [trig_results[k]["fve_cos"] for k in freqs]
-    fve_sin = [trig_results[k]["fve_sin"] for k in freqs]
-
-    fig.add_trace(go.Bar(
-        x=[f"k={k}" for k in freqs], y=fve_cos,
-        marker_color="#e74c3c", opacity=0.8,
-        text=[f"{v:.1%}" for v in fve_cos], textposition="outside",
-    ), row=1, col=1)
-
-    fig.add_trace(go.Bar(
-        x=[f"k={k}" for k in freqs], y=fve_sin,
-        marker_color="#3498db", opacity=0.8,
-        text=[f"{v:.1%}" for v in fve_sin], textposition="outside",
-    ), row=1, col=2)
-
-    fig.update_yaxes(range=[0, 1.1], row=1, col=1)
-    fig.update_yaxes(range=[0, 1.1], row=1, col=2)
-
-    fig.update_layout(
-        title="Trig Identity Verification: MLP computes cos/sin(wk(a+b)) via product formula",
-        height=350, showlegend=False,
-    )
-    return fig
-
-
-def viz_ablation_results(ablation: dict) -> go.Figure:
-    """Visualize ablation test results."""
-    fig = make_subplots(rows=1, cols=2,
-                        subplot_titles=["Global Ablations", "Per-Frequency Ablation"])
-
-    # Global
-    labels = ["Baseline", "Without key freqs", "Only key freqs"]
-    values = [
-        ablation["baseline_accuracy"],
-        ablation["accuracy_without_key_freqs"],
-        ablation["accuracy_restricted_to_key_freqs"],
-    ]
-    colors = ["#2ecc71", "#e74c3c", "#3498db"]
-
-    fig.add_trace(go.Bar(
-        x=labels, y=values, marker_color=colors, opacity=0.8,
-        text=[f"{v:.1%}" for v in values], textposition="outside",
-    ), row=1, col=1)
-
-    # Per-frequency
-    if "per_frequency_ablation" in ablation:
-        per_freq = ablation["per_frequency_ablation"]
-        freq_labels = [f"k={k}" for k in per_freq.keys()]
-        freq_values = list(per_freq.values())
-        fig.add_trace(go.Bar(
-            x=freq_labels, y=freq_values, marker_color="#9b59b6", opacity=0.8,
-            text=[f"{v:.1%}" for v in freq_values], textposition="outside",
-        ), row=1, col=2)
-
-    fig.update_yaxes(range=[0, 1.1])
-    fig.update_layout(
-        title="Ablation Tests: Key frequencies are necessary and sufficient",
-        height=350, showlegend=False,
-    )
-    return fig
-
-
-def viz_training_curves(train_losses: list, test_accs: list) -> go.Figure:
-    """Visualize training curves showing grokking."""
-    fig = make_subplots(rows=1, cols=2,
-                        subplot_titles=["Training Loss", "Test Accuracy"])
 
     if train_losses:
-        epochs_l, losses = zip(*train_losses)
-        fig.add_trace(go.Scatter(
-            x=list(epochs_l), y=list(losses), mode="lines",
-            line=dict(color="#e74c3c", width=2), name="Train Loss",
-        ), row=1, col=1)
-    fig.update_yaxes(type="log", row=1, col=1)
+        epochs_loss, losses = zip(*train_losses)
+        fig.add_trace(
+            go.Scatter(x=list(epochs_loss), y=list(losses), mode="lines",
+                       name="Train Loss", line=dict(color="red", width=2)),
+            row=1, col=1,
+        )
 
     if test_accs:
-        epochs_a, accs = zip(*test_accs)
-        fig.add_trace(go.Scatter(
-            x=list(epochs_a), y=list(accs), mode="lines+markers",
-            line=dict(color="#3498db", width=2), marker=dict(size=3),
-            name="Test Accuracy",
-        ), row=1, col=2)
-    fig.update_yaxes(range=[0, 1.05], row=1, col=2)
+        epochs_acc, accs = zip(*test_accs)
+        fig.add_trace(
+            go.Scatter(x=list(epochs_acc), y=list(accs), mode="lines",
+                       name="Test Accuracy", line=dict(color="blue", width=2)),
+            row=2, col=1,
+        )
+        # Add grokking threshold line
+        fig.add_hline(y=0.99, line_dash="dash", line_color="green",
+                      annotation_text="Grokking threshold (99%)", row=2, col=1)
 
-    fig.update_layout(
-        title="Training Dynamics (Grokking: memorize first, then generalize)",
-        height=350, showlegend=False,
-    )
+    fig.update_xaxes(title_text="Epoch", row=1, col=1)
+    fig.update_xaxes(title_text="Epoch", row=2, col=1)
+    fig.update_yaxes(title_text="Loss", type="log", row=1, col=1)
+    fig.update_yaxes(title_text="Accuracy", range=[0, 1.05], row=2, col=1)
+    fig.update_layout(height=600, title_text="Training Progress", showlegend=True)
+
     return fig
 
 
-def format_circuit_report(circuit: DiscoveredCircuit, ablation: dict) -> str:
-    """Format the full mathematical description of the discovered circuit."""
-    lines = []
-    lines.append("=" * 74)
-    lines.append("  DISCOVERED CIRCUIT: MATHEMATICAL DESCRIPTION")
-    lines.append("=" * 74)
-    lines.append("")
-    lines.append(circuit.algorithm_description)
-    lines.append("")
-    lines.append("-" * 74)
-    lines.append("  MATHEMATICAL FORMULA")
-    lines.append("-" * 74)
-    lines.append(f"  {circuit.mathematical_formula}")
-    lines.append("")
-    lines.append("-" * 74)
-    lines.append("  VERIFICATION RESULTS")
-    lines.append("-" * 74)
-    lines.append(f"  Exhaustive test accuracy: {circuit.verification_accuracy:.4%}")
-    lines.append(f"  Logit FVE (formula explains this much variance): {circuit.fve_logits:.4f}")
-    lines.append("")
-    lines.append("  Per-frequency MLP FVE (trig identity quality):")
-    for k, fve in circuit.fve_mlp.items():
-        lines.append(f"    Frequency k={k}: FVE = {fve:.4f}")
-    lines.append("")
-    lines.append(f"  Neurons assigned to frequencies: {len(circuit.neuron_frequency_assignments)}")
-    freq_counts = {}
-    for info in circuit.neuron_frequency_assignments.values():
-        f = info["frequency"]
-        freq_counts[f] = freq_counts.get(f, 0) + 1
-    for f, count in sorted(freq_counts.items()):
-        lines.append(f"    Frequency k={f}: {count} neurons")
-    lines.append("")
-    lines.append("-" * 74)
-    lines.append("  ABLATION TESTS (Nanda et al. 2023, Section 4.4)")
-    lines.append("-" * 74)
-    lines.append(f"  Baseline accuracy: {ablation['baseline_accuracy']:.4%}")
-    lines.append(f"  Without key frequencies: {ablation['accuracy_without_key_freqs']:.4%}")
-    lines.append(f"  Restricted to key frequencies only: {ablation['accuracy_restricted_to_key_freqs']:.4%}")
-    if "per_frequency_ablation" in ablation:
-        lines.append("  Per-frequency ablation (removing one at a time):")
-        for k, acc in ablation["per_frequency_ablation"].items():
-            lines.append(f"    Remove k={k}: accuracy = {acc:.4%}")
-    lines.append("")
-    lines.append("-" * 74)
-    lines.append("  INTERPRETATION")
-    lines.append("-" * 74)
-    lines.append("  The model has learned the FOURIER MULTIPLICATION ALGORITHM:")
-    lines.append("  1. Embed inputs as rotations on the unit circle at key frequencies")
-    lines.append("  2. Use attention to combine embeddings of a and b")
-    lines.append("  3. MLP computes cos(wk(a+b)) via: cos(A+B) = cosA*cosB - sinA*sinB")
-    lines.append("  4. Unembed computes cos(wk(a+b-c)) for each output c")
-    lines.append("  5. Constructive interference at c* = (a+b) mod P gives max logit")
-    lines.append("")
-    lines.append("  This is VERIFIED by:")
-    lines.append(f"  - Formula alone achieves {circuit.verification_accuracy:.2%} accuracy")
-    lines.append(f"  - Removing key freqs destroys performance ({ablation['accuracy_without_key_freqs']:.2%})")
-    lines.append(f"  - Keeping ONLY key freqs preserves performance ({ablation['accuracy_restricted_to_key_freqs']:.2%})")
-    lines.append("=" * 74)
-    return "\n".join(lines)
+def make_fourier_plot(embed_norms: np.ndarray, wl_norms: np.ndarray, key_freqs: list[int]) -> go.Figure:
+    """Plot Fourier norms of embedding and neuron-logit map."""
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=("Embedding Fourier Norms (W_E)", "Neuron-Logit Map Fourier Norms (W_L)"),
+        vertical_spacing=0.12,
+    )
+
+    freqs = list(range(len(embed_norms)))
+
+    # Highlight key frequencies
+    colors_embed = ["red" if f in key_freqs else "steelblue" for f in freqs]
+    colors_wl = ["red" if f in key_freqs else "steelblue" for f in freqs]
+
+    fig.add_trace(
+        go.Bar(x=freqs, y=embed_norms, marker_color=colors_embed, name="W_E norms"),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Bar(x=freqs, y=wl_norms, marker_color=colors_wl, name="W_L norms"),
+        row=2, col=1,
+    )
+
+    fig.update_xaxes(title_text="Frequency k", row=1, col=1)
+    fig.update_xaxes(title_text="Frequency k", row=2, col=1)
+    fig.update_yaxes(title_text="Norm", row=1, col=1)
+    fig.update_yaxes(title_text="Norm", row=2, col=1)
+    fig.update_layout(height=600, title_text="Fourier Analysis (red = key frequencies)", showlegend=False)
+
+    return fig
+
+
+def make_neuron_assignment_plot(assignments: dict, key_freqs: list[int], d_mlp: int) -> go.Figure:
+    """Visualize neuron-to-frequency assignments."""
+    freq_counts = {k: 0 for k in key_freqs}
+    freq_counts["unassigned"] = 0
+
+    for neuron_idx, info in assignments.items():
+        freq = info["frequency"]
+        if freq in freq_counts:
+            freq_counts[freq] += 1
+
+    freq_counts["unassigned"] = d_mlp - len(assignments)
+
+    labels = [str(k) for k in key_freqs] + ["unassigned"]
+    values = [freq_counts.get(k, 0) for k in key_freqs] + [freq_counts["unassigned"]]
+
+    fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3)])
+    fig.update_layout(title_text=f"Neuron Frequency Assignments ({len(assignments)}/{d_mlp} assigned)")
+
+    return fig
+
+
+def make_ablation_plot(ablation_results: dict) -> go.Figure:
+    """Visualize ablation test results."""
+    labels = ["Baseline", "Without Key Freqs", "Only Key Freqs"]
+    values = [
+        ablation_results["baseline_accuracy"],
+        ablation_results["accuracy_without_key_freqs"],
+        ablation_results["accuracy_restricted_to_key_freqs"],
+    ]
+
+    colors = ["green", "red", "blue"]
+
+    fig = go.Figure(data=[go.Bar(x=labels, y=values, marker_color=colors)])
+    fig.update_yaxes(title_text="Accuracy", range=[0, 1.05])
+    fig.update_layout(title_text="Ablation Test: Key Frequencies are Necessary & Sufficient", height=400)
+
+    return fig
 
 
 # =============================================================================
 # Gradio GUI
 # =============================================================================
 
-def run_gui():
-    """Launch the interactive circuit discovery GUI."""
+def build_gui():
+    """Build the Gradio interface with live training plots and metrics table."""
     import gradio as gr
 
-    state = {"model": None, "circuit": None, "ablation": None,
-             "train_losses": [], "test_accs": [], "trig_results": None}
+    # Global state
+    state = {
+        "model": None,
+        "circuit": None,
+        "train_losses": [],
+        "test_accs": [],
+        "metrics_table": [],
+        "ablation_results": None,
+    }
 
-    def train_and_discover(P, d_model, n_heads, d_mlp, train_frac, epochs, progress=gr.Progress()):
-        """Train model and discover circuits."""
-        P = int(P)
-        d_model = int(d_model)
-        n_heads = int(n_heads)
-        d_mlp = int(d_mlp)
-        epochs = int(epochs)
+    def load_saved_metrics():
+        """Load previously saved training metrics if available."""
+        csv_path = os.path.join(SAVE_DIR, "training_metrics.csv")
+        if os.path.exists(csv_path):
+            df = pd.read_csv(csv_path)
+            return df
+        return pd.DataFrame()
 
-        log_lines = []
-        def cb(msg):
-            log_lines.append(msg)
+    def train_and_update(P, d_model, n_heads, d_mlp, train_frac, epochs, lr, weight_decay, progress=gr.Progress()):
+        """Train model with live progress updates, returning plot and table."""
+        logs = []
 
-        progress(0.05, desc="Training model (this may take a while)...")
-        model, train_losses, test_accs = train_model(
-            P=P, d_model=d_model, n_heads=n_heads, d_mlp=d_mlp,
-            train_frac=train_frac, epochs=epochs, progress_cb=cb
+        def progress_cb(msg):
+            logs.append(msg)
+
+        model, train_losses, test_accs, metrics_table = train_model(
+            P=int(P), d_model=int(d_model), n_heads=int(n_heads), d_mlp=int(d_mlp),
+            train_frac=float(train_frac), epochs=int(epochs), lr=float(lr),
+            weight_decay=float(weight_decay), progress_cb=progress_cb, progress=progress,
         )
+
         state["model"] = model
         state["train_losses"] = train_losses
         state["test_accs"] = test_accs
+        state["metrics_table"] = metrics_table
 
-        progress(0.5, desc="Discovering circuits via Fourier analysis...")
-        discoverer = CircuitDiscoverer(model)
-        circuit = discoverer.full_discovery(cb)
+        # Create plot
+        fig = make_training_plot(train_losses, test_accs)
+
+        # Create DataFrame for table display
+        df = pd.DataFrame(metrics_table)
+
+        # Log summary
+        log_text = "\n".join(logs[-20:])  # Last 20 log lines
+
+        return fig, df, log_text
+
+    def discover_circuit(progress=gr.Progress()):
+        """Run circuit discovery on the trained model."""
+        if state["model"] is None:
+            return "No model trained yet!", None, None, None, ""
+
+        logs = []
+
+        def progress_cb(msg):
+            logs.append(msg)
+
+        progress(0.1, desc="Starting circuit discovery...")
+        discoverer = CircuitDiscoverer(state["model"])
+        circuit = discoverer.full_discovery(progress_cb=progress_cb)
         state["circuit"] = circuit
 
         progress(0.8, desc="Running ablation tests...")
-        abl = ablation_test(model, circuit.key_frequencies)
-        state["ablation"] = abl
+        ablation_results = ablation_test(state["model"], circuit.key_frequencies)
+        state["ablation_results"] = ablation_results
 
-        # Also store trig results for viz
-        trig_results = discoverer.verify_trig_identities(circuit.key_frequencies)
-        state["trig_results"] = trig_results
+        progress(0.9, desc="Generating visualizations...")
 
-        progress(0.9, desc="Building visualizations...")
+        fourier_fig = make_fourier_plot(circuit.embedding_fourier_norms, circuit.wl_fourier_norms, circuit.key_frequencies)
+        neuron_fig = make_neuron_assignment_plot(circuit.neuron_frequency_assignments, circuit.key_frequencies, state["model"].d_mlp)
+        ablation_fig = make_ablation_plot(ablation_results)
 
-        # Generate all plots
-        training_fig = viz_training_curves(train_losses, test_accs)
-        fourier_fig = viz_fourier_spectra(circuit)
-        circle_fig = viz_embedding_on_circle(model, circuit.key_frequencies)
-        neuron_fig = viz_neuron_activations(model, circuit.key_frequencies)
-        logit_fig = viz_logit_structure(model, circuit.key_frequencies)
-        trig_fig = viz_trig_identities(model, trig_results, P)
-        ablation_fig = viz_ablation_results(abl)
+        # Build summary text
+        summary = (
+            f"## Discovered Circuit\n\n"
+            f"**Key Frequencies:** {circuit.key_frequencies}\n\n"
+            f"**Mathematical Formula:**\n```\n{circuit.mathematical_formula}\n```\n\n"
+            f"**Logit FVE:** {circuit.fve_logits:.4f}\n\n"
+            f"**Verification Accuracy:** {circuit.verification_accuracy*100:.2f}%\n\n"
+            f"### Algorithm Description\n\n{circuit.algorithm_description}\n\n"
+            f"### Ablation Results\n\n"
+            f"- Baseline: {ablation_results['baseline_accuracy']:.4f}\n"
+            f"- Without key freqs: {ablation_results['accuracy_without_key_freqs']:.4f}\n"
+            f"- Only key freqs: {ablation_results['accuracy_restricted_to_key_freqs']:.4f}\n"
+        )
 
-        report = format_circuit_report(circuit, abl)
-        log_text = "\n".join(log_lines)
-
+        log_text = "\n".join(logs)
         progress(1.0, desc="Done!")
-        return (training_fig, fourier_fig, circle_fig, neuron_fig,
-                logit_fig, trig_fig, ablation_fig, report, log_text)
 
-    def test_specific_inputs(a_val, b_val):
-        """Test the discovered formula on specific inputs."""
-        if state["model"] is None or state["circuit"] is None:
-            return "Train a model first."
+        return summary, fourier_fig, neuron_fig, ablation_fig, log_text
 
-        model = state["model"]
-        circuit = state["circuit"]
-        P = model.P
-        a_val = int(a_val) % P
-        b_val = int(b_val) % P
-        true_answer = (a_val + b_val) % P
+    def view_saved_training_data():
+        """Load and display saved training metrics and plot."""
+        csv_path = os.path.join(SAVE_DIR, "training_metrics.csv")
+        if not os.path.exists(csv_path):
+            return pd.DataFrame({"message": ["No saved training data found."]}), go.Figure()
 
-        # Model prediction
-        with torch.no_grad():
-            logits = model(torch.tensor([a_val]), torch.tensor([b_val]))
-            model_pred = logits.argmax(dim=-1).item()
+        df = pd.read_csv(csv_path)
 
-        # Formula prediction
-        formula_logits = np.zeros(P)
-        for i, k in enumerate(circuit.key_frequencies):
-            wk = 2 * np.pi * k / P
-            alpha = circuit.frequency_amplitudes[k]
-            for c in range(P):
-                formula_logits[c] += alpha * np.cos(wk * (a_val + b_val - c))
-        formula_pred = np.argmax(formula_logits)
+        # Reconstruct plot from saved data
+        train_losses = list(zip(df["epoch"].tolist(), df["train_loss"].tolist()))
+        test_accs = list(zip(df["epoch"].tolist(), df["test_acc"].tolist()))
+        fig = make_training_plot(train_losses, test_accs)
 
-        result = f"Input: {a_val} + {b_val} mod {P}\n"
-        result += f"True answer: {true_answer}\n"
-        result += f"Model prediction: {model_pred} {'CORRECT' if model_pred == true_answer else 'WRONG'}\n"
-        result += f"Formula prediction: {formula_pred} {'CORRECT' if formula_pred == true_answer else 'WRONG'}\n"
-        result += f"\nFormula used:\n  {circuit.mathematical_formula}\n"
-        result += f"\nTop 5 logits (formula):\n"
-        top5 = np.argsort(formula_logits)[::-1][:5]
-        for c in top5:
-            result += f"  c={c}: {formula_logits[c]:.4f} {'<-- correct' if c == true_answer else ''}\n"
+        return df, fig
 
-        return result
-
-    # Build GUI
-    with gr.Blocks(
-        title="Grokking Circuit Discovery",
-        theme=gr.themes.Base(primary_hue="indigo", secondary_hue="purple"),
-    ) as demo:
+    # Build the Gradio app
+    with gr.Blocks(title="Grokking Circuit Discovery Tool", theme=gr.themes.Soft()) as demo:
+        gr.Markdown("# 🔬 Grokking Circuit Discovery & Verification Tool")
         gr.Markdown(
-            "# Grokking Circuit Discovery & Verification\n"
-            "Train a transformer on modular addition, automatically discover the Fourier multiplication "
-            "algorithm, verify it mechanically, and visualize the circuit structure.\n"
-            "Based on [Nanda et al. (2023) 'Progress Measures for Grokking'](https://arxiv.org/abs/2301.05217)"
+            "Train a small transformer on modular addition, observe grokking, "
+            "and automatically discover the Fourier multiplication circuit."
         )
 
-        with gr.Row():
-            with gr.Column(scale=1, min_width=280):
-                gr.Markdown("### Training Config")
-                p_input = gr.Number(value=113, label="Prime P", precision=0)
-                d_model_input = gr.Number(value=128, label="d_model", precision=0)
-                n_heads_input = gr.Number(value=4, label="n_heads", precision=0)
-                d_mlp_input = gr.Number(value=512, label="d_mlp", precision=0)
-                train_frac_input = gr.Slider(0.1, 0.9, value=0.3, step=0.05, label="Train fraction")
-                epochs_input = gr.Number(value=15000, label="Epochs", precision=0)
-                train_btn = gr.Button("Train & Discover", variant="primary", size="lg")
+        with gr.Tabs():
+            # ===== TAB 1: Training =====
+            with gr.TabItem("🏋️ Training"):
+                gr.Markdown("### Model & Training Configuration")
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        p_input = gr.Number(value=113, label="Prime P (modulus)", precision=0)
+                        d_model_input = gr.Number(value=128, label="d_model", precision=0)
+                        n_heads_input = gr.Number(value=4, label="n_heads", precision=0)
+                        d_mlp_input = gr.Number(value=512, label="d_mlp", precision=0)
+                    with gr.Column(scale=1):
+                        train_frac_input = gr.Number(value=0.3, label="Train fraction")
+                        epochs_input = gr.Number(value=30000, label="Max epochs", precision=0)
+                        lr_input = gr.Number(value=1e-3, label="Learning rate")
+                        wd_input = gr.Number(value=1.0, label="Weight decay")
 
-                gr.Markdown("---")
-                gr.Markdown("### Test Specific Input")
-                a_input = gr.Number(value=17, label="a", precision=0)
-                b_input = gr.Number(value=42, label="b", precision=0)
-                test_btn = gr.Button("Test")
-                test_output = gr.Textbox(label="Result", lines=10, interactive=False)
+                train_btn = gr.Button("🚀 Train Model", variant="primary", size="lg")
 
-                gr.Markdown("---")
-                log_box = gr.Textbox(label="Log", lines=8, interactive=False)
+                gr.Markdown("### Training Progress")
+                training_plot = gr.Plot(label="Training Curves (Live)")
+                training_table = gr.Dataframe(label="Training Metrics Table", interactive=False)
+                training_log = gr.Textbox(label="Training Log", lines=10, interactive=False)
 
-            with gr.Column(scale=3, min_width=700):
-                with gr.Tabs():
-                    with gr.TabItem("Training"):
-                        training_plot = gr.Plot(label="Grokking Dynamics")
-                    with gr.TabItem("Fourier Spectra"):
-                        fourier_plot = gr.Plot(label="W_E and W_L Fourier Norms")
-                    with gr.TabItem("Circle Embedding"):
-                        circle_plot = gr.Plot(label="Tokens on Unit Circle")
-                    with gr.TabItem("Neuron Activations"):
-                        neuron_plot = gr.Plot(label="Periodic MLP Neurons")
-                    with gr.TabItem("Logit Structure"):
-                        logit_plot = gr.Plot(label="Constructive Interference")
-                    with gr.TabItem("Trig Identities"):
-                        trig_plot = gr.Plot(label="MLP Trig Identity Verification")
-                    with gr.TabItem("Ablations"):
-                        ablation_plot = gr.Plot(label="Ablation Tests")
-                    with gr.TabItem("Full Report"):
-                        report_box = gr.Textbox(label="Mathematical Circuit Description",
-                                               lines=35, interactive=False)
+                train_btn.click(
+                    fn=train_and_update,
+                    inputs=[p_input, d_model_input, n_heads_input, d_mlp_input,
+                            train_frac_input, epochs_input, lr_input, wd_input],
+                    outputs=[training_plot, training_table, training_log],
+                )
 
-        train_btn.click(
-            fn=train_and_discover,
-            inputs=[p_input, d_model_input, n_heads_input, d_mlp_input, train_frac_input, epochs_input],
-            outputs=[training_plot, fourier_plot, circle_plot, neuron_plot,
-                    logit_plot, trig_plot, ablation_plot, report_box, log_box],
-        )
+            # ===== TAB 2: Circuit Discovery =====
+            with gr.TabItem("🔍 Circuit Discovery"):
+                gr.Markdown("### Discover the Fourier Multiplication Circuit")
+                discover_btn = gr.Button("🔬 Discover Circuit", variant="primary", size="lg")
 
-        test_btn.click(
-            fn=test_specific_inputs,
-            inputs=[a_input, b_input],
-            outputs=[test_output],
-        )
+                circuit_summary = gr.Markdown(label="Circuit Summary")
+                with gr.Row():
+                    fourier_plot = gr.Plot(label="Fourier Analysis")
+                    neuron_plot = gr.Plot(label="Neuron Assignments")
+                ablation_plot = gr.Plot(label="Ablation Results")
+                discovery_log = gr.Textbox(label="Discovery Log", lines=15, interactive=False)
 
-    demo.launch(inbrowser=True, server_name="0.0.0.0", server_port=7860, show_error=True)
+                discover_btn.click(
+                    fn=discover_circuit,
+                    inputs=[],
+                    outputs=[circuit_summary, fourier_plot, neuron_plot, ablation_plot, discovery_log],
+                )
+
+            # ===== TAB 3: Saved Training Data =====
+            with gr.TabItem("📊 Saved Training Data"):
+                gr.Markdown("### View Previously Saved Training Metrics")
+                gr.Markdown(
+                    f"Training metrics are automatically saved to `{SAVE_DIR}/training_metrics.csv` "
+                    "after each training run."
+                )
+                load_btn = gr.Button("📂 Load Saved Data", variant="secondary")
+
+                saved_table = gr.Dataframe(label="Saved Training Metrics", interactive=False)
+                saved_plot = gr.Plot(label="Saved Training Curves")
+
+                load_btn.click(
+                    fn=view_saved_training_data,
+                    inputs=[],
+                    outputs=[saved_table, saved_plot],
+                )
+
+            # ===== TAB 4: About =====
+            with gr.TabItem("ℹ️ About"):
+                gr.Markdown("""
+                ## About This Tool
+
+                This tool implements the circuit discovery methodology from:
+
+                **"Progress Measures for Grokking via Mechanistic Interpretability"**
+                (Nanda et al., 2023)
+
+                ### What is Grokking?
+
+                Grokking is a phenomenon where a neural network first memorizes training data
+                (achieving high train accuracy but low test accuracy), then suddenly generalizes
+                after many more training steps.
+
+                ### The Fourier Multiplication Algorithm
+
+                The discovered circuit works as follows:
+                1. **Embedding**: Maps inputs to Fourier components (sin/cos at key frequencies)
+                2. **Attention**: Moves information from input positions to the output position
+                3. **MLP**: Computes trig identities to get cos(wk*(a+b)) from cos(wk*a), sin(wk*a), etc.
+                4. **Unembedding**: Converts back from Fourier space to logits via constructive interference
+
+                ### Key Metrics
+                - **FVE (Fraction of Variance Explained)**: How well the discovered formula explains model behavior
+                - **Ablation accuracy**: Confirms key frequencies are necessary and sufficient
+                - **Exhaustive verification**: Tests the formula on all P² possible inputs
+                """)
+
+    return demo
 
 
 # =============================================================================
-# Entry Point
+# Main Entry Point
 # =============================================================================
 
 if __name__ == "__main__":
-    print()
-    print("=" * 60)
-    print("  Grokking Circuit Discovery & Verification")
-    print("  Based on Nanda et al. (2023)")
-    print("=" * 60)
-    print()
-    print("  http://localhost:7860")
-    print("  Ctrl+C to stop")
-    print()
-    run_gui()
+    demo = build_gui()
+    demo.launch(share=False, server_name="0.0.0.0", server_port=7860)
