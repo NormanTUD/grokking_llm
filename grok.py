@@ -1268,6 +1268,16 @@ def run_gui():
                 logit_fig, trig_fig, ablation_fig, weight_fig, attn_fig,
                 report, log_text, gr.Dropdown(choices=get_saved_runs()))
 
+    def get_saved_runs():
+        """Get list of saved runs for dropdown."""
+        runs = []
+        if RUNS_DIR.exists():
+            for d in sorted(RUNS_DIR.iterdir()):
+                if d.is_dir() and (d / "config.json").exists():
+                    runs.append(d.name)
+        return runs
+
+
     def load_saved_run(run_name_str):
         """Load a previously saved run."""
         if not run_name_str:
