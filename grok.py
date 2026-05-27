@@ -2104,7 +2104,168 @@ def build_gui():
                     outputs=[saved_table, saved_plot],
                 )
 
-            # ===== TAB 6: About =====
+            # ===== TAB 6: Interactive Inference =====
+            with gr.TabItem("Run Inference"):
+                gr.Markdown("### Enter Numbers to Test the Neural Network")
+                gr.Markdown(
+                    "Enter two numbers `a` and `b` (between 0 and P-1) to see what the trained model "
+                    "predicts for `(a + b) mod P`. You can also enter multiple pairs to test in batch."
+                )
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        input_a = gr.Number(value=7, label="Input a", precision=0, info="Integer from 0 to P-1")
+                        input_b = gr.Number(value=13, label="Input b", precision=0, info="Integer from 0 to P-1")
+                        infer_btn = gr.Button("Run Prediction", variant="primary", size="lg")
+                    with gr.Column(scale=2):
+                        infer_result_md = gr.Markdown(label="Prediction Result")
+
+                gr.Markdown("---")
+                gr.Markdown("### Batch Inference")
+                gr.Markdown(
+                    "Enter comma-separated pairs (e.g., `3,5; 10,20; 50,63`) to test multiple inputs at once."
+                )
+                batch_input = gr.Textbox(
+                    label="Batch input (format: a1,b1; a2,b2; ...)",
+                    placeholder="3,5; 10,20; 50,63; 100,12",
+                    lines=2,
+                )
+                batch_btn = gr.Button("Run Batch Prediction", variant="secondary")
+                batch_result_table = gr.Dataframe(label="Batch Results", interactive=False)
+                batch_top_k_plot = gr.Plot(label="Top-K Logits for Last Input")
+
+                def run_single_inference(a, b):
+                    """Run the model on a single (a, b) pair."""
+                    if state["model"] is None:
+                        return "⚠️ **No model trained yet!** Please go to the Training tab and train a model first."
+
+                    model = state["model"]
+                    P = model.P
+                    a_int = int(a) % P
+                    b_int = int(b) % P
+                    correct_answer = (a_int + b_int) % P
+
+                    a_tensor = torch.tensor([a_int])
+                    b_tensor = torch.tensor([b_int])
+
+                    with torch.no_grad():
+                        logits = model(a_tensor, b_tensor)  # (1, P)
+                        probs = F.softmax(logits, dim=-1)
+                        predicted = logits.argmax(dim=-1).item()
+                        confidence = probs[0, predicted].item()
+
+                    # Top 5 predictions
+                    top_k_values, top_k_indices = torch.topk(probs[0], k=min(5, P))
+
+                    is_correct = "✅" if predicted == correct_answer else "❌"
+
+                    result = (
+                        f"## Result\n\n"
+                        f"**Input:** a = {a_int}, b = {b_int}\n\n"
+                        f"**True answer:** ({a_int} + {b_int}) mod {P} = **{correct_answer}**\n\n"
+                        f"**Model prediction:** **{predicted}** (confidence: {confidence*100:.2f}%) {is_correct}\n\n"
+                        f"### Top 5 Predictions\n\n"
+                        f"| Rank | Value | Probability |\n"
+                        f"|------|-------|-------------|\n"
+                    )
+                    for i in range(len(top_k_indices)):
+                        val = top_k_indices[i].item()
+                        prob = top_k_values[i].item()
+                        marker = " ← correct" if val == correct_answer else ""
+                        result += f"| {i+1} | {val} | {prob*100:.3f}%{marker} |\n"
+
+                    return result
+
+                def run_batch_inference(batch_str):
+                    """Run the model on multiple (a, b) pairs."""
+                    if state["model"] is None:
+                        return pd.DataFrame({"error": ["No model trained yet!"]}), go.Figure()
+
+                    model = state["model"]
+                    P = model.P
+
+                    # Parse input
+                    pairs = []
+                    try:
+                        for pair_str in batch_str.strip().split(";"):
+                            pair_str = pair_str.strip()
+                            if not pair_str:
+                                continue
+                            parts = pair_str.split(",")
+                            a_val = int(parts[0].strip()) % P
+                            b_val = int(parts[1].strip()) % P
+                            pairs.append((a_val, b_val))
+                    except (ValueError, IndexError):
+                        return pd.DataFrame({"error": ["Invalid input format. Use: a1,b1; a2,b2; ..."]}), go.Figure()
+
+                    if not pairs:
+                        return pd.DataFrame({"error": ["No valid pairs found."]}), go.Figure()
+
+                    # Run inference
+                    a_tensor = torch.tensor([p[0] for p in pairs])
+                    b_tensor = torch.tensor([p[1] for p in pairs])
+
+                    with torch.no_grad():
+                        logits = model(a_tensor, b_tensor)
+                        probs = F.softmax(logits, dim=-1)
+                        predictions = logits.argmax(dim=-1)
+
+                    # Build results table
+                    rows = []
+                    for i, (a_val, b_val) in enumerate(pairs):
+                        correct = (a_val + b_val) % P
+                        pred = predictions[i].item()
+                        conf = probs[i, pred].item()
+                        rows.append({
+                            "a": a_val,
+                            "b": b_val,
+                            "correct ((a+b) mod P)": correct,
+                            "predicted": pred,
+                            "confidence (%)": round(conf * 100, 2),
+                            "correct?": "✅" if pred == correct else "❌",
+                        })
+
+                    df = pd.DataFrame(rows)
+
+                    # Plot top-K logits for the last input
+                    last_probs = probs[-1].cpu().numpy()
+                    top_k = min(10, P)
+                    top_indices = np.argsort(last_probs)[-top_k:][::-1]
+                    top_probs = last_probs[top_indices]
+
+                    last_correct = (pairs[-1][0] + pairs[-1][1]) % P
+                    colors = ["green" if idx == last_correct else "steelblue" for idx in top_indices]
+
+                    fig = go.Figure(data=[
+                        go.Bar(
+                            x=[str(idx) for idx in top_indices],
+                            y=top_probs,
+                            marker_color=colors,
+                        )
+                    ])
+                    fig.update_layout(
+                        title=f"Top-{top_k} Predictions for a={pairs[-1][0]}, b={pairs[-1][1]} (green = correct: {last_correct})",
+                        xaxis_title="Output class",
+                        yaxis_title="Probability",
+                        height=400,
+                    )
+
+                    return df, fig
+
+                infer_btn.click(
+                    fn=run_single_inference,
+                    inputs=[input_a, input_b],
+                    outputs=[infer_result_md],
+                )
+
+                batch_btn.click(
+                    fn=run_batch_inference,
+                    inputs=[batch_input],
+                    outputs=[batch_result_table, batch_top_k_plot],
+                )
+
+
+            # ===== TAB 7: About =====
             with gr.TabItem("About"):
                 gr.Markdown("""
                 ## About This Tool
