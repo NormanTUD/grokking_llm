@@ -17,13 +17,18 @@ structured circuits) in small transformers trained on modular arithmetic,
 based on Nanda et al. (2023) "Progress Measures for Grokking via
 Mechanistic Interpretability".
 
+Enhanced with Automatic Circuit Discovery (ACDC) methods from
+Conmy et al. (2023) "Towards Automated Circuit Discovery for
+Mechanistic Interpretability".
+
 The tool:
 1. Trains (or loads) a small transformer on modular addition
 2. Discovers key frequencies via Fourier analysis of weights
-3. Verifies the circuit mechanically (ablations, FVE checks)
-4. Visualizes embeddings on the circle, neuron activations, attention patterns
-5. Provides mathematical descriptions of discovered circuits
-6. Tests predictions exhaustively to confirm correctness
+3. Performs ACDC-style edge-level activation patching to find minimal circuits
+4. Verifies the circuit mechanically (ablations, FVE checks)
+5. Visualizes embeddings on the circle, neuron activations, attention patterns
+6. Provides mathematical descriptions of discovered circuits
+7. Tests predictions exhaustively to confirm correctness
 
 Usage:
     uv run circuit_extract.py
@@ -119,6 +124,170 @@ class ModularAdditionTransformer(nn.Module):
         logits = self.unembed(final.squeeze(1))  # (batch, P)
         return logits
 
+    def forward_with_hooks(self, a_idx, b_idx, hook_points=None):
+        """
+        Forward pass that returns intermediate activations at specified hook points.
+        Used for ACDC-style activation patching.
+
+        hook_points: dict mapping hook_name -> None (will be filled with activations)
+        Returns: logits, activations_dict
+        """
+        if hook_points is None:
+            hook_points = {}
+
+        batch = a_idx.shape[0]
+        eq_idx = torch.full((batch,), self.P, device=a_idx.device)
+
+        pos_ids = torch.arange(3, device=a_idx.device).unsqueeze(0).expand(batch, -1)
+        tok_ids = torch.stack([a_idx, b_idx, eq_idx], dim=1)
+
+        # Embedding
+        tok_embed = self.embed(tok_ids)
+        pos_embed_val = self.pos_embed(pos_ids)
+        x = tok_embed + pos_embed_val
+
+        activations = {}
+        activations["embed"] = x.detach().clone()
+        activations["tok_embed"] = tok_embed.detach().clone()
+        activations["pos_embed"] = pos_embed_val.detach().clone()
+
+        # Attention
+        Q = self.W_Q(x[:, 2:3, :])
+        K = self.W_K(x[:, :2, :])
+        V = self.W_V(x[:, :2, :])
+
+        activations["Q"] = Q.detach().clone()
+        activations["K"] = K.detach().clone()
+        activations["V"] = V.detach().clone()
+
+        batch_size = Q.shape[0]
+        Q_heads = Q.view(batch_size, 1, self.n_heads, self.d_head).transpose(1, 2)
+        K_heads = K.view(batch_size, 2, self.n_heads, self.d_head).transpose(1, 2)
+        V_heads = V.view(batch_size, 2, self.n_heads, self.d_head).transpose(1, 2)
+
+        scores = torch.matmul(Q_heads, K_heads.transpose(-2, -1)) / math.sqrt(self.d_head)
+        attn_weights = torch.softmax(scores, dim=-1)
+        activations["attn_weights"] = attn_weights.detach().clone()
+
+        attn_out = torch.matmul(attn_weights, V_heads)
+        attn_out = attn_out.transpose(1, 2).contiguous().view(batch_size, 1, self.d_model)
+        attn_out = self.W_O(attn_out)
+        activations["attn_out"] = attn_out.detach().clone()
+
+        # Per-head attention outputs
+        for h in range(self.n_heads):
+            V_h = V_heads[:, h:h+1, :, :]  # (batch, 1, 2, d_head)
+            attn_h = attn_weights[:, h:h+1, :, :]  # (batch, 1, 1, 2)
+            out_h = torch.matmul(attn_h, V_h)  # (batch, 1, 1, d_head)
+            activations[f"attn_head_{h}"] = out_h.squeeze(1).detach().clone()
+
+        # Residual stream after attention
+        residual = x[:, 2:3, :] + attn_out
+        activations["residual_mid"] = residual.detach().clone()
+
+        # MLP
+        mlp_pre = self.mlp_in(residual)
+        activations["mlp_pre"] = mlp_pre.detach().clone()
+        mlp_hidden = F.relu(mlp_pre)
+        activations["mlp_hidden"] = mlp_hidden.detach().clone()
+        mlp_out = self.mlp_out(mlp_hidden)
+        activations["mlp_out"] = mlp_out.detach().clone()
+
+        # Final
+        final = residual + mlp_out
+        activations["residual_final"] = final.detach().clone()
+
+        logits = self.unembed(final.squeeze(1))
+        activations["logits"] = logits.detach().clone()
+
+        return logits, activations
+
+    def forward_with_patches(self, a_idx, b_idx, patches: dict):
+        """
+        Forward pass with activation patching applied.
+        patches: dict mapping hook_name -> replacement_tensor
+        Replaces the activation at the specified hook point with the given tensor.
+        """
+        batch = a_idx.shape[0]
+        eq_idx = torch.full((batch,), self.P, device=a_idx.device)
+
+        pos_ids = torch.arange(3, device=a_idx.device).unsqueeze(0).expand(batch, -1)
+        tok_ids = torch.stack([a_idx, b_idx, eq_idx], dim=1)
+
+        tok_embed = self.embed(tok_ids)
+        pos_embed_val = self.pos_embed(pos_ids)
+
+        if "tok_embed" in patches:
+            tok_embed = patches["tok_embed"]
+        if "pos_embed" in patches:
+            pos_embed_val = patches["pos_embed"]
+
+        x = tok_embed + pos_embed_val
+        if "embed" in patches:
+            x = patches["embed"]
+
+        # Attention
+        Q = self.W_Q(x[:, 2:3, :])
+        K = self.W_K(x[:, :2, :])
+        V = self.W_V(x[:, :2, :])
+
+        if "Q" in patches:
+            Q = patches["Q"]
+        if "K" in patches:
+            K = patches["K"]
+        if "V" in patches:
+            V = patches["V"]
+
+        batch_size = Q.shape[0]
+        Q_heads = Q.view(batch_size, 1, self.n_heads, self.d_head).transpose(1, 2)
+        K_heads = K.view(batch_size, 2, self.n_heads, self.d_head).transpose(1, 2)
+        V_heads = V.view(batch_size, 2, self.n_heads, self.d_head).transpose(1, 2)
+
+        # Per-head patching
+        for h in range(self.n_heads):
+            if f"Q_head_{h}" in patches:
+                Q_heads[:, h, :, :] = patches[f"Q_head_{h}"]
+            if f"K_head_{h}" in patches:
+                K_heads[:, h, :, :] = patches[f"K_head_{h}"]
+            if f"V_head_{h}" in patches:
+                V_heads[:, h, :, :] = patches[f"V_head_{h}"]
+
+        scores = torch.matmul(Q_heads, K_heads.transpose(-2, -1)) / math.sqrt(self.d_head)
+        attn_weights = torch.softmax(scores, dim=-1)
+
+        if "attn_weights" in patches:
+            attn_weights = patches["attn_weights"]
+
+        attn_out = torch.matmul(attn_weights, V_heads)
+        attn_out = attn_out.transpose(1, 2).contiguous().view(batch_size, 1, self.d_model)
+        attn_out = self.W_O(attn_out)
+
+        if "attn_out" in patches:
+            attn_out = patches["attn_out"]
+
+        residual = x[:, 2:3, :] + attn_out
+        if "residual_mid" in patches:
+            residual = patches["residual_mid"]
+
+        mlp_pre = self.mlp_in(residual)
+        if "mlp_pre" in patches:
+            mlp_pre = patches["mlp_pre"]
+
+        mlp_hidden = F.relu(mlp_pre)
+        if "mlp_hidden" in patches:
+            mlp_hidden = patches["mlp_hidden"]
+
+        mlp_out = self.mlp_out(mlp_hidden)
+        if "mlp_out" in patches:
+            mlp_out = patches["mlp_out"]
+
+        final = residual + mlp_out
+        if "residual_final" in patches:
+            final = patches["residual_final"]
+
+        logits = self.unembed(final.squeeze(1))
+        return logits
+
     def get_mlp_activations(self, a_idx, b_idx):
         """Get MLP hidden activations for analysis."""
         batch = a_idx.shape[0]
@@ -154,15 +323,7 @@ class ModularAdditionTransformer(nn.Module):
 def train_model(P: int = 113, d_model: int = 128, n_heads: int = 4, d_mlp: int = 512,
                 train_frac: float = 0.3, epochs: int = 30000, lr: float = 1e-3,
                 weight_decay: float = 1.0, progress_cb=None, progress=None) -> tuple:
-    """Train a model on modular addition until it groks.
-
-    Args:
-        progress_cb: callback for log messages
-        progress: Gradio progress object for live progress bar updates
-
-    Returns:
-        (model, train_losses, test_accs, metrics_table)
-    """
+    """Train a model on modular addition until it groks."""
     model = ModularAdditionTransformer(P, d_model, n_heads, d_mlp)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -219,7 +380,6 @@ def train_model(P: int = 113, d_model: int = 128, n_heads: int = 4, d_mlp: int =
                 "best_test_acc": round(best_test_acc, 4),
             })
 
-            # Update Gradio progress bar with actual percentage and info
             if progress is not None:
                 pct = (epoch + 1) / epochs
                 progress(pct, desc=f"Epoch {epoch}/{epochs} | loss={loss.item():.4f} | test_acc={test_acc:.3f}")
@@ -242,351 +402,700 @@ def train_model(P: int = 113, d_model: int = 128, n_heads: int = 4, d_mlp: int =
 
 
 # =============================================================================
-# Circuit Discovery: Fourier Analysis
+# ACDC-Style Automatic Circuit Discovery
 # =============================================================================
 
 @dataclass
-class DiscoveredCircuit:
-    """A mathematically exact description of a discovered circuit."""
-    key_frequencies: list[int]
-    frequency_amplitudes: dict  # freq -> amplitude
-    algorithm_description: str
-    mathematical_formula: str
-    fve_logits: float  # fraction of variance explained
-    fve_mlp: dict  # freq -> FVE for that frequency's trig identity
-    verification_accuracy: float  # exhaustive test accuracy
-    neuron_frequency_assignments: dict  # neuron_idx -> frequency
-    embedding_fourier_norms: np.ndarray
-    wl_fourier_norms: np.ndarray
-
-
-class CircuitDiscoverer:
+class ComputationalGraph:
     """
-    Automatically discover the Fourier multiplication circuit in a trained model.
-    Implements the analysis from Nanda et al. (2023) Section 4.
+    Represents the computational graph of the transformer at a chosen granularity.
+    Nodes represent components (embed, attn heads, MLP neurons, unembed).
+    Edges represent information flow between components.
+    """
+    nodes: list  # list of node names
+    edges: set   # set of (parent, child) tuples
+    node_layers: dict  # node_name -> layer_index for topological ordering
+
+    def reverse_topological_sort(self) -> list:
+        """Sort nodes from output to input (reverse topological order)."""
+        return sorted(self.nodes, key=lambda n: -self.node_layers.get(n, 0))
+
+    def remove_edge(self, parent: str, child: str):
+        """Remove an edge from the graph."""
+        self.edges.discard((parent, child))
+
+    def get_parents(self, node: str) -> list:
+        """Get all parent nodes of a given node."""
+        return [p for p, c in self.edges if c == node]
+
+    def get_children(self, node: str) -> list:
+        """Get all child nodes of a given node."""
+        return [c for p, c in self.edges if p == node]
+
+    def copy(self):
+        """Return a deep copy of this graph."""
+        return ComputationalGraph(
+            nodes=list(self.nodes),
+            edges=set(self.edges),
+            node_layers=dict(self.node_layers),
+        )
+
+    @property
+    def num_edges(self) -> int:
+        return len(self.edges)
+
+
+def build_computational_graph(model: ModularAdditionTransformer, granularity: str = "component") -> ComputationalGraph:
+    """
+    Build the computational graph for the modular addition transformer.
+
+    granularity options:
+    - "component": nodes are embed, attn_head_0..3, mlp, unembed
+    - "fine": nodes include Q, K, V per head, individual MLP neuron groups, etc.
+    - "neuron": individual MLP neurons as nodes
+    """
+    nodes = []
+    edges = set()
+    node_layers = {}
+
+    if granularity == "component":
+        # Layer 0: embeddings
+        nodes.append("tok_embed")
+        nodes.append("pos_embed")
+        node_layers["tok_embed"] = 0
+        node_layers["pos_embed"] = 0
+
+        # Layer 1: attention heads
+        for h in range(model.n_heads):
+            name = f"attn_head_{h}"
+            nodes.append(name)
+            node_layers[name] = 1
+            edges.add(("tok_embed", name))
+            edges.add(("pos_embed", name))
+
+        # Layer 2: MLP
+        nodes.append("mlp")
+        node_layers["mlp"] = 2
+        edges.add(("tok_embed", "mlp"))
+        edges.add(("pos_embed", "mlp"))
+        for h in range(model.n_heads):
+            edges.add((f"attn_head_{h}", "mlp"))
+
+        # Layer 3: output (unembed)
+        nodes.append("unembed")
+        node_layers["unembed"] = 3
+        edges.add(("mlp", "unembed"))
+        # Residual stream: attention heads can also directly affect output
+        for h in range(model.n_heads):
+            edges.add((f"attn_head_{h}", "unembed"))
+        # Embedding residual to output
+        edges.add(("tok_embed", "unembed"))
+        edges.add(("pos_embed", "unembed"))
+
+    elif granularity == "fine":
+        # Embeddings
+        nodes.extend(["tok_embed", "pos_embed"])
+        node_layers["tok_embed"] = 0
+        node_layers["pos_embed"] = 0
+
+        # Per-head Q, K, V
+        for h in range(model.n_heads):
+            for comp in ["Q", "K", "V"]:
+                name = f"head_{h}_{comp}"
+                nodes.append(name)
+                node_layers[name] = 1
+                edges.add(("tok_embed", name))
+                edges.add(("pos_embed", name))
+
+            # Head output
+            head_out = f"attn_head_{h}"
+            nodes.append(head_out)
+            node_layers[head_out] = 2
+            edges.add((f"head_{h}_Q", head_out))
+            edges.add((f"head_{h}_K", head_out))
+            edges.add((f"head_{h}_V", head_out))
+
+        # MLP input (residual mid)
+        nodes.append("residual_mid")
+        node_layers["residual_mid"] = 3
+        edges.add(("tok_embed", "residual_mid"))
+        edges.add(("pos_embed", "residual_mid"))
+        for h in range(model.n_heads):
+            edges.add((f"attn_head_{h}", "residual_mid"))
+
+        # MLP
+        nodes.append("mlp_pre")
+        node_layers["mlp_pre"] = 4
+        edges.add(("residual_mid", "mlp_pre"))
+
+        nodes.append("mlp_hidden")
+        node_layers["mlp_hidden"] = 5
+        edges.add(("mlp_pre", "mlp_hidden"))
+
+        nodes.append("mlp_out")
+        node_layers["mlp_out"] = 6
+        edges.add(("mlp_hidden", "mlp_out"))
+
+        # Output
+        nodes.append("unembed")
+        node_layers["unembed"] = 7
+        edges.add(("residual_mid", "unembed"))
+        edges.add(("mlp_out", "unembed"))
+
+    elif granularity == "neuron":
+        # Embeddings
+        nodes.extend(["tok_embed", "pos_embed"])
+        node_layers["tok_embed"] = 0
+        node_layers["pos_embed"] = 0
+
+        # Attention heads
+        for h in range(model.n_heads):
+            name = f"attn_head_{h}"
+            nodes.append(name)
+            node_layers[name] = 1
+            edges.add(("tok_embed", name))
+            edges.add(("pos_embed", name))
+
+        # Individual MLP neurons (grouped into clusters for tractability)
+        n_neuron_groups = min(model.d_mlp, 64)  # Group neurons for tractability
+        neurons_per_group = model.d_mlp // n_neuron_groups
+        for g in range(n_neuron_groups):
+            name = f"neuron_group_{g}"
+            nodes.append(name)
+            node_layers[name] = 2
+            edges.add(("tok_embed", name))
+            edges.add(("pos_embed", name))
+            for h in range(model.n_heads):
+                edges.add((f"attn_head_{h}", name))
+
+        # Output
+        nodes.append("unembed")
+        node_layers["unembed"] = 3
+        for g in range(n_neuron_groups):
+            edges.add((f"neuron_group_{g}", "unembed"))
+        for h in range(model.n_heads):
+            edges.add((f"attn_head_{h}", "unembed"))
+        edges.add(("tok_embed", "unembed"))
+        edges.add(("pos_embed", "unembed"))
+
+    return ComputationalGraph(nodes=nodes, edges=edges, node_layers=node_layers)
+
+
+class ACDCCircuitDiscoverer:
+    """
+    Implements the ACDC algorithm from Conmy et al. (2023).
+
+    The algorithm iterates from outputs to inputs through the computational graph,
+    starting at the output node, to build a subgraph. At every node it attempts to
+    remove as many edges that enter this node as possible, without reducing the
+    model's performance on a selected metric (KL divergence).
     """
 
-    def __init__(self, model: ModularAdditionTransformer):
+    def __init__(self, model: ModularAdditionTransformer, granularity: str = "component"):
         self.model = model
         self.P = model.P
-        self.d_model = model.d_model
-        self.d_mlp = model.d_mlp
+        self.granularity = granularity
+        self.graph = build_computational_graph(model, granularity)
 
-    def _dft_matrix(self, N: int) -> np.ndarray:
-        """Discrete Fourier Transform matrix."""
-        n = np.arange(N)
-        k = np.arange(N)
-        return np.exp(-2j * np.pi * np.outer(k, n) / N) / np.sqrt(N)
+        # Cache clean and corrupted activations
+        self._clean_cache = None
+        self._corrupted_cache = None
+        self._clean_logits = None
+        self._clean_a = None
+        self._clean_b = None
+        self._corrupt_a = None
+        self._corrupt_b = None
 
-    def _fourier_basis(self) -> tuple[np.ndarray, np.ndarray]:
-        """Get real Fourier basis vectors: cos(2*pi*k*x/P) and sin(2*pi*k*x/P)."""
+    def _prepare_data(self, n_samples: int = 512):
+        """Prepare clean and corrupted datasets for activation patching."""
         P = self.P
-        x = np.arange(P)
-        cos_basis = np.zeros((P // 2 + 1, P))
-        sin_basis = np.zeros((P // 2 + 1, P))
-        for k in range(P // 2 + 1):
-            cos_basis[k] = np.cos(2 * np.pi * k * x / P)
-            sin_basis[k] = np.sin(2 * np.pi * k * x / P)
-        return cos_basis, sin_basis
-
-    def analyze_embedding_fourier(self) -> np.ndarray:
-        """
-        Compute Fourier norms of embedding matrix W_E.
-        Per Section 4.1: W_E should be sparse in Fourier basis.
-        """
-        W_E = self.model.embed.weight[:self.P].detach().cpu().numpy()  # (P, d_model)
-        P = self.P
-        cos_basis, sin_basis = self._fourier_basis()
-
-        norms = np.zeros(P // 2 + 1)
-        for k in range(P // 2 + 1):
-            cos_proj = cos_basis[k] @ W_E  # (d_model,)
-            sin_proj = sin_basis[k] @ W_E  # (d_model,)
-            norms[k] = np.sqrt(np.sum(cos_proj**2) + np.sum(sin_proj**2))
-
-        return norms
-
-    def analyze_neuron_logit_map(self) -> np.ndarray:
-        """
-        Compute Fourier norms of neuron-logit map W_L = W_U @ W_out.
-        Per Section 4.2: W_L should be sparse in Fourier basis.
-        """
-        W_out = self.model.mlp_out.weight.detach().cpu().numpy()  # (d_model, d_mlp)
-        W_U = self.model.unembed.weight.detach().cpu().numpy()    # (P, d_model)
-        W_L = W_U @ W_out  # (P, d_mlp) - maps neurons to logits
-
-        cos_basis, sin_basis = self._fourier_basis()
-        P = self.P
-
-        norms = np.zeros(P // 2 + 1)
-        for k in range(P // 2 + 1):
-            cos_proj = cos_basis[k] @ W_L  # (d_mlp,)
-            sin_proj = sin_basis[k] @ W_L  # (d_mlp,)
-            norms[k] = np.sqrt(np.sum(cos_proj**2) + np.sum(sin_proj**2))
-
-        return norms
-
-    def find_key_frequencies(self, n_freqs: int = 5) -> list[int]:
-        """
-        Identify key frequencies used by the model.
-        These are frequencies with large norms in both W_E and W_L.
-        """
-        embed_norms = self.analyze_embedding_fourier()
-        wl_norms = self.analyze_neuron_logit_map()
-
-        # Combined score (both must be significant)
-        combined = embed_norms * wl_norms
-        # Exclude frequency 0 (constant)
-        combined[0] = 0
-
-        # Find top frequencies
-        top_indices = np.argsort(combined)[::-1][:n_freqs]
-        # Filter: only keep those significantly above noise
-        threshold = combined[top_indices[0]] * 0.1
-        key_freqs = [int(k) for k in top_indices if combined[k] > threshold]
-
-        return key_freqs[:n_freqs]
-
-    def verify_trig_identities(self, key_freqs: list[int]) -> dict:
-        """
-        Verify that MLP computes cos(wk(a+b)) and sin(wk(a+b)).
-        """
-        P = self.P
-        model = self.model
-
-        W_out = model.mlp_out.weight.detach().cpu().numpy()
-        W_U = model.unembed.weight.detach().cpu().numpy()
-        W_L = W_U @ W_out  # (P, d_mlp)
-
-        cos_basis, sin_basis = self._fourier_basis()
-
         all_a = torch.arange(P).repeat_interleave(P)
         all_b = torch.arange(P).repeat(P)
+
+        # Use a subset for efficiency
+        if n_samples < P * P:
+            perm = torch.randperm(P * P)[:n_samples]
+            clean_a = all_a[perm]
+            clean_b = all_b[perm]
+        else:
+            clean_a = all_a
+            clean_b = all_b
+
+        # Corrupted data: random permutation (interchange intervention)
+        corrupt_perm = torch.randperm(len(clean_a))
+        corrupt_a = clean_a[corrupt_perm]
+        corrupt_b = clean_b[corrupt_perm]
+
+        self._clean_a = clean_a
+        self._clean_b = clean_b
+        self._corrupt_a = corrupt_a
+        self._corrupt_b = corrupt_b
+
+        # Cache activations
         with torch.no_grad():
-            mlp_acts, _ = model.get_mlp_activations(all_a, all_b)
-        mlp_acts = mlp_acts.cpu().numpy()  # (P*P, d_mlp)
+            self._clean_logits, self._clean_cache = self.model.forward_with_hooks(clean_a, clean_b)
+            _, self._corrupted_cache = self.model.forward_with_hooks(corrupt_a, corrupt_b)
 
-        results = {}
-        for k in key_freqs:
-            wk = 2 * np.pi * k / P
-
-            cos_wk = cos_basis[k]  # (P,)
-            sin_wk = sin_basis[k]  # (P,)
-
-            u_k = W_L.T @ cos_wk  # (d_mlp,)
-            v_k = W_L.T @ sin_wk  # (d_mlp,)
-            u_k = u_k / (np.linalg.norm(u_k) + 1e-10)
-            v_k = v_k / (np.linalg.norm(v_k) + 1e-10)
-
-            cos_proj = mlp_acts @ u_k  # (P*P,)
-            sin_proj = mlp_acts @ v_k  # (P*P,)
-
-            a_vals = all_a.numpy()
-            b_vals = all_b.numpy()
-            true_cos = np.cos(wk * (a_vals + b_vals))
-            true_sin = np.sin(wk * (a_vals + b_vals))
-
-            alpha_cos = np.dot(cos_proj, true_cos) / (np.dot(true_cos, true_cos) + 1e-10)
-            alpha_sin = np.dot(sin_proj, true_sin) / (np.dot(true_sin, true_sin) + 1e-10)
-
-            residual_cos = cos_proj - alpha_cos * true_cos
-            fve_cos = 1.0 - np.var(residual_cos) / (np.var(cos_proj) + 1e-10)
-
-            residual_sin = sin_proj - alpha_sin * true_sin
-            fve_sin = 1.0 - np.var(residual_sin) / (np.var(sin_proj) + 1e-10)
-
-            results[k] = {
-                "fve_cos": float(max(0, fve_cos)),
-                "fve_sin": float(max(0, fve_sin)),
-                "amplitude_cos": float(alpha_cos),
-                "amplitude_sin": float(alpha_sin),
-                "formula_cos": f"{alpha_cos:.1f} * cos(2pi*{k}*(a+b)/{P})",
-                "formula_sin": f"{alpha_sin:.1f} * sin(2pi*{k}*(a+b)/{P})",
-            }
-
-        return results
-
-    def verify_logit_approximation(self, key_freqs: list[int]) -> tuple[float, np.ndarray]:
+    def _compute_kl_divergence(self, logits_patched: torch.Tensor) -> float:
         """
-        Verify logits ~ sum_k alpha_k * cos(wk(a+b-c)).
+        Compute KL divergence between clean model output and patched output.
+        DKL(G(x) || H(x, x'))
         """
-        P = self.P
-        model = self.model
+        clean_probs = F.softmax(self._clean_logits, dim=-1)
+        patched_log_probs = F.log_softmax(logits_patched, dim=-1)
 
-        all_a = torch.arange(P).repeat_interleave(P)
-        all_b = torch.arange(P).repeat(P)
+        # KL(clean || patched) = sum(clean * (log(clean) - log(patched)))
+        kl = F.kl_div(patched_log_probs, clean_probs, reduction="batchmean")
+        return kl.item()
+
+    def _get_patch_for_edge(self, parent: str, child: str) -> dict:
+        """
+        Create a patch dict that replaces the contribution of parent to child
+        with the corrupted activation.
+        """
+        patches = {}
+
+        if self.granularity == "component":
+            # For component-level, patching an edge means replacing the parent's
+            # output with its corrupted version when it flows to the child.
+            # We map edge types to the appropriate activation to patch.
+
+            if parent == "tok_embed":
+                patches["tok_embed"] = self._corrupted_cache["tok_embed"]
+            elif parent == "pos_embed":
+                patches["pos_embed"] = self._corrupted_cache["pos_embed"]
+            elif parent.startswith("attn_head_"):
+                head_idx = int(parent.split("_")[-1])
+                patches[f"attn_head_{head_idx}"] = self._corrupted_cache[f"attn_head_{head_idx}"]
+            elif parent == "mlp":
+                patches["mlp_out"] = self._corrupted_cache["mlp_out"]
+
+        elif self.granularity == "fine":
+            if parent in self._corrupted_cache:
+                patches[parent] = self._corrupted_cache[parent]
+
+        elif self.granularity == "neuron":
+            if parent.startswith("neuron_group_"):
+                # Patch specific neuron group by zeroing/corrupting those neurons
+                group_idx = int(parent.split("_")[-1])
+                n_groups = min(self.model.d_mlp, 64)
+                neurons_per_group = self.model.d_mlp // n_groups
+                start = group_idx * neurons_per_group
+                end = start + neurons_per_group
+
+                corrupted_hidden = self._corrupted_cache["mlp_hidden"].clone()
+                clean_hidden = self._clean_cache["mlp_hidden"].clone()
+                # Create a patched version where only this group is corrupted
+                patched_hidden = clean_hidden.clone()
+                patched_hidden[:, :, start:end] = corrupted_hidden[:, :, start:end]
+                patches["mlp_hidden"] = patched_hidden
+            elif parent in self._corrupted_cache:
+                patches[parent] = self._corrupted_cache[parent]
+
+        return patches
+
+    def _evaluate_edge_importance(self, parent: str, child: str) -> float:
+        """
+        Evaluate the importance of an edge by patching it and measuring KL divergence.
+        Following Algorithm 1 from Conmy et al. (2023): we measure
+        DKL(G(x) || H_new(x, x')) - DKL(G(x) || H(x, x'))
+        """
+        patches = self._get_patch_for_edge(parent, child)
+        if not patches:
+            return 0.0
+
         with torch.no_grad():
-            logits = model(all_a, all_b).cpu().numpy()  # (P*P, P)
+            patched_logits = self.model.forward_with_patches(
+                self._clean_a, self._clean_b, patches
+            )
 
-        a_vals = all_a.numpy()
-        b_vals = all_b.numpy()
+        kl_div = self._compute_kl_divergence(patched_logits)
+        return kl_div
 
-        n_samples = P * P
-        X = np.zeros((n_samples, P, len(key_freqs)))
-        for i, k in enumerate(key_freqs):
-            wk = 2 * np.pi * k / P
-            for sample_idx in range(n_samples):
-                a, b = a_vals[sample_idx], b_vals[sample_idx]
-                for c in range(P):
-                    X[sample_idx, c, i] = np.cos(wk * (a + b - c))
+    def run_acdc(self, threshold: float = 0.01, n_samples: int = 512,
+                 progress_cb=None) -> ComputationalGraph:
 
-        X_flat = X.reshape(-1, len(key_freqs))
-        y_flat = logits.flatten()
-
-        alphas, _, _, _ = np.linalg.lstsq(X_flat, y_flat, rcond=None)
-
-        y_pred = X_flat @ alphas
-        ss_res = np.sum((y_flat - y_pred) ** 2)
-        ss_tot = np.sum((y_flat - y_flat.mean()) ** 2)
-        fve = 1.0 - ss_res / (ss_tot + 1e-10)
-
-        return float(max(0, fve)), alphas
-
-    def assign_neurons_to_frequencies(self, key_freqs: list[int]) -> dict:
         """
-        Per Section 4.3: most neurons compute degree-2 polynomials of a single frequency.
+        Run the full ACDC algorithm to discover the minimal circuit.
+
+        Following Algorithm 1 from Conmy et al. (2023): iterates from outputs to inputs
+        through the computational graph, attempting to remove edges that don't significantly
+        affect model performance (measured by KL divergence).
+
+        Args:
+            threshold: tau parameter - edges causing KL increase below this are removed
+            n_samples: number of data samples for activation patching
+            progress_cb: callback for progress messages
+
+        Returns:
+            Pruned ComputationalGraph representing the discovered circuit
         """
-        P = self.P
-        model = self.model
-
-        all_a = torch.arange(P).repeat_interleave(P)
-        all_b = torch.arange(P).repeat(P)
-        with torch.no_grad():
-            mlp_acts, _ = model.get_mlp_activations(all_a, all_b)
-        mlp_acts = mlp_acts.cpu().numpy()  # (P*P, d_mlp)
-
-        a_vals = all_a.numpy()
-        b_vals = all_b.numpy()
-
-        assignments = {}
-        for neuron_idx in range(self.d_mlp):
-            activations = mlp_acts[:, neuron_idx]
-            best_fve = 0.0
-            best_freq = -1
-
-            for k in key_freqs:
-                wk = 2 * np.pi * k / P
-                basis = np.column_stack([
-                    np.ones(len(a_vals)),
-                    np.cos(wk * a_vals), np.sin(wk * a_vals),
-                    np.cos(wk * b_vals), np.sin(wk * b_vals),
-                    np.cos(wk * a_vals) * np.cos(wk * b_vals),
-                    np.sin(wk * a_vals) * np.sin(wk * b_vals),
-                    np.cos(wk * a_vals) * np.sin(wk * b_vals),
-                    np.sin(wk * a_vals) * np.cos(wk * b_vals),
-                ])
-
-                coeffs, _, _, _ = np.linalg.lstsq(basis, activations, rcond=None)
-                pred = basis @ coeffs
-                ss_res = np.sum((activations - pred) ** 2)
-                ss_tot = np.sum((activations - activations.mean()) ** 2)
-                fve = 1.0 - ss_res / (ss_tot + 1e-10) if ss_tot > 1e-10 else 0.0
-
-                if fve > best_fve:
-                    best_fve = fve
-                    best_freq = k
-
-            if best_fve > 0.85:
-                assignments[neuron_idx] = {"frequency": best_freq, "fve": best_fve}
-
-        return assignments
-
-    def exhaustive_verification(self, key_freqs: list[int], alphas: np.ndarray) -> tuple[float, int, int]:
-        """
-        Mechanically test the discovered circuit by computing predictions
-        using ONLY the discovered formula and checking against ground truth.
-        """
-        P = self.P
-        correct = 0
-        total = P * P
-
-        for a in range(P):
-            for b in range(P):
-                logits = np.zeros(P)
-                for i, k in enumerate(key_freqs):
-                    wk = 2 * np.pi * k / P
-                    for c in range(P):
-                        logits[c] += alphas[i] * np.cos(wk * (a + b - c))
-
-                predicted = np.argmax(logits)
-                true_answer = (a + b) % P
-                if predicted == true_answer:
-                    correct += 1
-
-        accuracy = correct / total
-        return accuracy, correct, total
-
-    def full_discovery(self, progress_cb=None) -> DiscoveredCircuit:
-        """Run the full circuit discovery pipeline."""
         def update(msg):
             if progress_cb:
                 progress_cb(msg)
 
-        update("Analyzing embedding Fourier structure...")
-        embed_norms = self.analyze_embedding_fourier()
+        update("Preparing clean and corrupted datasets...")
+        self._prepare_data(n_samples)
 
-        update("Analyzing neuron-logit map Fourier structure...")
-        wl_norms = self.analyze_neuron_logit_map()
+        # Initialize H to the full computational graph (Algorithm 1, Line 1)
+        H = self.graph.copy()
+        initial_edges = H.num_edges
 
-        update("Finding key frequencies...")
-        key_freqs = self.find_key_frequencies()
-        update(f"  Key frequencies: {key_freqs}")
+        update(f"Starting ACDC with {initial_edges} edges, threshold tau={threshold}")
 
-        update("Verifying trigonometric identities in MLP...")
-        trig_results = self.verify_trig_identities(key_freqs)
-        for k, res in trig_results.items():
-            update(f"  Freq {k}: FVE_cos={res['fve_cos']:.3f}, FVE_sin={res['fve_sin']:.3f}")
+        # Compute baseline KL divergence (should be 0 for full graph)
+        baseline_kl = self._compute_circuit_kl(H)
+        update(f"Baseline KL divergence (full graph): {baseline_kl:.6f}")
 
-        update("Verifying logit approximation...")
-        fve_logits, alphas = self.verify_logit_approximation(key_freqs)
-        update(f"  Logit FVE: {fve_logits:.4f}")
+        # Sort nodes from output to input (reverse topological order) - Algorithm 1, Line 2
+        sorted_nodes = H.reverse_topological_sort()
 
-        update("Assigning neurons to frequencies...")
-        neuron_assignments = self.assign_neurons_to_frequencies(key_freqs)
-        n_assigned = len(neuron_assignments)
-        update(f"  {n_assigned}/{self.d_mlp} neurons assigned ({100*n_assigned/self.d_mlp:.1f}%)")
+        edges_removed = 0
+        edges_tested = 0
 
-        update("Exhaustive verification (testing all P*P inputs)...")
-        verify_acc, correct, total = self.exhaustive_verification(key_freqs, alphas)
-        update(f"  Circuit accuracy: {correct}/{total} = {verify_acc:.4f}")
+        # Iterate over nodes from output to input (Algorithm 1, Line 3)
+        for node_idx, v in enumerate(sorted_nodes):
+            parents = H.get_parents(v)
+            if not parents:
+                continue
 
-        # Build mathematical description
-        P = self.P
-        freq_amps = {k: float(alphas[i]) for i, k in enumerate(key_freqs)}
+            update(f"Processing node '{v}' ({node_idx+1}/{len(sorted_nodes)}) - {len(parents)} parent edges to test")
 
-        formula_parts = []
-        for i, k in enumerate(key_freqs):
-            formula_parts.append(f"{alphas[i]:.2f} * cos(2pi*{k}*(a+b-c)/{P})")
-        formula = "logit(c | a,b) = " + " + ".join(formula_parts)
+            # For each parent w of v (Algorithm 1, Line 4)
+            for w in list(parents):  # copy list since we may modify edges
+                edges_tested += 1
 
-        algorithm_desc = (
-            f"The model performs modular addition (a+b) mod {P} using the Fourier Multiplication Algorithm:\n"
-            f"1. EMBED: Maps inputs a,b to sin(wk*a), cos(wk*a), sin(wk*b), cos(wk*b) "
-            f"for key frequencies k in {key_freqs}\n"
-            f"   where wk = 2*pi*k/{P}\n"
-            f"2. COMPUTE: Uses attention + MLP to compute cos(wk*(a+b)) and sin(wk*(a+b))\n"
-            f"   via trig identities: cos(wk*(a+b)) = cos(wk*a)*cos(wk*b) - sin(wk*a)*sin(wk*b)\n"
-            f"3. READOUT: Computes logit(c) = sum_k alpha_k * cos(wk*(a+b-c))\n"
-            f"   Constructive interference at c* = (a+b) mod {P} gives maximum logit.\n"
-            f"\nVerification: {correct}/{total} correct ({verify_acc*100:.2f}%)"
+                # Temporarily remove candidate edge (Algorithm 1, Line 5)
+                H_new = H.copy()
+                H_new.remove_edge(w, v)
+
+                # Compute KL divergence change (Algorithm 1, Line 6)
+                kl_new = self._compute_circuit_kl(H_new)
+                kl_current = self._compute_circuit_kl(H)
+                kl_increase = kl_new - kl_current
+
+                # If edge is unimportant, remove permanently (Algorithm 1, Lines 6-7)
+                if kl_increase < threshold:
+                    H.remove_edge(w, v)
+                    edges_removed += 1
+
+            remaining = H.num_edges
+            update(f"  After node '{v}': {remaining} edges remaining ({edges_removed} removed so far)")
+
+        final_edges = H.num_edges
+        update(f"\nACDC complete: {initial_edges} -> {final_edges} edges "
+               f"({edges_removed} removed, {edges_tested} tested)")
+        update(f"Compression ratio: {final_edges/initial_edges:.2%}")
+
+        return H
+
+    def _compute_circuit_kl(self, H: ComputationalGraph) -> float:
+        """
+        Compute KL divergence for a given subgraph H.
+
+        For edges NOT in H, we replace their activations with corrupted activations.
+        This implements H(x_i, x'_i) from the ACDC paper: the model output when
+        edges not in H are overwritten with their corrupted values.
+        """
+        # Determine which edges are NOT in H (these get patched with corrupted activations)
+        full_edges = self.graph.edges
+        removed_edges = full_edges - H.edges
+
+        if not removed_edges:
+            # Full graph, no patching needed - KL should be ~0
+            return 0.0
+
+        # Build patches dict based on removed edges
+        patches = self._build_patches_from_removed_edges(removed_edges)
+
+        # Run forward pass with patches
+        with torch.no_grad():
+            patched_logits = self.model.forward_with_patches(
+                self._clean_a, self._clean_b, patches
+            )
+
+        kl_div = self._compute_kl_divergence(patched_logits)
+        return kl_div
+
+    def _build_patches_from_removed_edges(self, removed_edges: set) -> dict:
+        """
+        Build a patches dictionary from a set of removed edges.
+
+        When an edge (parent -> child) is removed, we replace the parent's
+        contribution to the child with the corrupted activation value.
+
+        For the modular addition transformer, we implement this at the component level
+        by determining which activations need to be replaced.
+        """
+        patches = {}
+
+        # Count how many edges into each node are removed
+        # If ALL edges into a node are removed, we patch that node's activation entirely
+        node_incoming_total = {}
+        node_incoming_removed = {}
+
+        for parent, child in self.graph.edges:
+            node_incoming_total[child] = node_incoming_total.get(child, 0) + 1
+
+        for parent, child in removed_edges:
+            node_incoming_removed[child] = node_incoming_removed.get(child, 0) + 1
+
+        if self.granularity == "component":
+            # Component-level patching strategy:
+            # If all inputs to a component are corrupted, replace its output with corrupted version
+
+            for node, n_removed in node_incoming_removed.items():
+                n_total = node_incoming_total.get(node, 0)
+
+                if n_total > 0 and n_removed == n_total:
+                    # All inputs removed - fully patch this node
+                    if node in self._corrupted_cache:
+                        patches[node] = self._corrupted_cache[node]
+                elif n_removed > 0 and n_removed < n_total:
+                    # Partial patching - interpolate based on fraction removed
+                    # This is an approximation; true edge-level patching would require
+                    # decomposing the residual stream contributions
+                    if node in self._corrupted_cache and node in self._clean_cache:
+                        frac_removed = n_removed / n_total
+                        clean_act = self._clean_cache[node]
+                        corrupt_act = self._corrupted_cache[node]
+                        patches[node] = (1 - frac_removed) * clean_act + frac_removed * corrupt_act
+
+            # Handle specific edge patterns for more precise patching
+            for parent, child in removed_edges:
+                # Attention head outputs directly to unembed (residual stream bypass)
+                if parent.startswith("attn_head_") and child == "unembed":
+                    head_idx = int(parent.split("_")[-1])
+                    patch_key = f"attn_head_{head_idx}"
+                    if patch_key in self._corrupted_cache and patch_key not in patches:
+                        patches[patch_key] = self._corrupted_cache[patch_key]
+
+                # Embedding to attention head
+                if parent in ("tok_embed", "pos_embed") and child.startswith("attn_head_"):
+                    if parent in self._corrupted_cache and parent not in patches:
+                        patches[parent] = self._corrupted_cache[parent]
+
+        elif self.granularity == "fine":
+            # Fine-grained patching: directly patch specific intermediate activations
+            for parent, child in removed_edges:
+                if parent in self._corrupted_cache and parent not in patches:
+                    # Check if ALL edges from this parent are removed
+                    parent_children = [(p, c) for p, c in self.graph.edges if p == parent]
+                    parent_removed = [(p, c) for p, c in removed_edges if p == parent]
+                    if len(parent_removed) == len(parent_children):
+                        patches[parent] = self._corrupted_cache[parent]
+
+        elif self.granularity == "neuron":
+            # Neuron-group level patching
+            for parent, child in removed_edges:
+                if parent.startswith("neuron_group_"):
+                    group_idx = int(parent.split("_")[-1])
+                    # Patch the corresponding neurons in mlp_hidden
+                    if "mlp_hidden" not in patches:
+                        patches["mlp_hidden"] = self._clean_cache["mlp_hidden"].clone()
+                    neurons_per_group = self.model.d_mlp // 64
+                    start = group_idx * neurons_per_group
+                    end = start + neurons_per_group
+                    patches["mlp_hidden"][:, :, start:end] = \
+                        self._corrupted_cache["mlp_hidden"][:, :, start:end]
+
+                elif parent.startswith("attn_head_") and child == "unembed":
+                    head_idx = int(parent.split("_")[-1])
+                    patch_key = f"attn_head_{head_idx}"
+                    if patch_key in self._corrupted_cache:
+                        patches[patch_key] = self._corrupted_cache[patch_key]
+
+        return patches
+
+    def get_circuit_summary(self, circuit: ComputationalGraph) -> dict:
+        """
+        Summarize the discovered circuit: which components are included,
+        which edges remain, and what the circuit structure looks like.
+        """
+        # Find active nodes (nodes with at least one edge)
+        active_nodes = set()
+        for parent, child in circuit.edges:
+            active_nodes.add(parent)
+            active_nodes.add(child)
+
+        # Categorize edges by type
+        edge_types = {
+            "embed_to_attn": [],
+            "embed_to_mlp": [],
+            "attn_to_mlp": [],
+            "attn_to_output": [],
+            "mlp_to_output": [],
+            "embed_to_output": [],
+            "other": [],
+        }
+
+        for parent, child in circuit.edges:
+            if parent in ("tok_embed", "pos_embed") and child.startswith("attn"):
+                edge_types["embed_to_attn"].append((parent, child))
+            elif parent in ("tok_embed", "pos_embed") and child == "mlp":
+                edge_types["embed_to_mlp"].append((parent, child))
+            elif parent.startswith("attn") and child == "mlp":
+                edge_types["attn_to_mlp"].append((parent, child))
+            elif parent.startswith("attn") and child == "unembed":
+                edge_types["attn_to_output"].append((parent, child))
+            elif parent == "mlp" and child == "unembed":
+                edge_types["mlp_to_output"].append((parent, child))
+            elif parent in ("tok_embed", "pos_embed") and child == "unembed":
+                edge_types["embed_to_output"].append((parent, child))
+            else:
+                edge_types["other"].append((parent, child))
+
+        # Identify which attention heads are in the circuit
+        active_heads = [n for n in active_nodes if n.startswith("attn_head_")]
+
+        return {
+            "num_edges": circuit.num_edges,
+            "num_active_nodes": len(active_nodes),
+            "active_nodes": sorted(active_nodes),
+            "active_heads": sorted(active_heads),
+            "edge_types": {k: len(v) for k, v in edge_types.items()},
+            "edge_details": edge_types,
+            "has_mlp_path": any(child == "unembed" for _, child in circuit.edges
+                               if _ == "mlp"),
+            "has_direct_path": any(parent in ("tok_embed", "pos_embed")
+                                   for parent, child in circuit.edges if child == "unembed"),
+        }
+
+    def visualize_circuit(self, circuit: ComputationalGraph) -> str:
+        """
+        Create a text-based visualization of the discovered circuit.
+        """
+        summary = self.get_circuit_summary(circuit)
+
+        lines = []
+        lines.append("=" * 60)
+        lines.append("ACDC Discovered Circuit")
+        lines.append("=" * 60)
+        lines.append(f"Total edges: {summary['num_edges']} / {self.graph.num_edges}")
+        lines.append(f"Active nodes: {summary['num_active_nodes']} / {len(self.graph.nodes)}")
+        lines.append(f"Compression: {summary['num_edges']/self.graph.num_edges:.1%}")
+        lines.append("")
+        lines.append("Active components:")
+        for node in summary["active_nodes"]:
+            lines.append(f"  - {node}")
+        lines.append("")
+        lines.append("Edge breakdown:")
+        for edge_type, count in summary["edge_types"].items():
+            if count > 0:
+                lines.append(f"  {edge_type}: {count}")
+        lines.append("")
+        lines.append("Circuit structure:")
+        lines.append("  Input -> Attention -> MLP -> Output")
+        if summary["has_mlp_path"]:
+            lines.append("  [MLP pathway ACTIVE]")
+        if summary["has_direct_path"]:
+            lines.append("  [Direct residual pathway ACTIVE]")
+        if summary["active_heads"]:
+            lines.append(f"  Active attention heads: {summary['active_heads']}")
+
+        return "\n".join(lines)
+
+
+# =============================================================================
+# Combined Circuit Discovery: Fourier + ACDC
+# =============================================================================
+
+class CombinedCircuitDiscoverer:
+    """
+    Combines Fourier analysis (Nanda et al. 2023) with ACDC (Conmy et al. 2023)
+    for comprehensive circuit discovery in grokking models.
+
+    The Fourier analysis identifies WHAT the circuit computes (key frequencies,
+    trig identities), while ACDC identifies HOW the circuit is structured
+    (which components and connections are essential).
+    """
+
+    def __init__(self, model: ModularAdditionTransformer):
+        self.model = model
+        self.fourier_discoverer = CircuitDiscoverer(model)
+        self.acdc_discoverer = ACDCCircuitDiscoverer(model, granularity="component")
+
+    def full_discovery(self, acdc_threshold: float = 0.01, n_samples: int = 512,
+                       progress_cb=None) -> dict:
+        """
+        Run both Fourier analysis and ACDC circuit discovery.
+
+        Returns a comprehensive report combining both analyses.
+        """
+        def update(msg):
+            if progress_cb:
+                progress_cb(msg)
+
+        # Phase 1: Fourier Analysis
+        update("=" * 50)
+        update("PHASE 1: Fourier Analysis (Nanda et al. 2023)")
+        update("=" * 50)
+        fourier_circuit = self.fourier_discoverer.full_discovery(progress_cb=progress_cb)
+
+        # Phase 2: ACDC Circuit Discovery
+        update("")
+        update("=" * 50)
+        update("PHASE 2: ACDC Circuit Discovery (Conmy et al. 2023)")
+        update("=" * 50)
+        acdc_circuit = self.acdc_discoverer.run_acdc(
+            threshold=acdc_threshold,
+            n_samples=n_samples,
+            progress_cb=progress_cb,
         )
 
-        fve_mlp = {}
-        for k, res in trig_results.items():
-            fve_mlp[k] = (res["fve_cos"] + res["fve_sin"]) / 2
+        # Phase 3: Cross-validation
+        update("")
+        update("=" * 50)
+        update("PHASE 3: Cross-validation")
+        update("=" * 50)
 
-        return DiscoveredCircuit(
-            key_frequencies=key_freqs,
-            frequency_amplitudes=freq_amps,
-            algorithm_description=algorithm_desc,
-            mathematical_formula=formula,
-            fve_logits=fve_logits,
-            fve_mlp=fve_mlp,
-            verification_accuracy=verify_acc,
-            neuron_frequency_assignments=neuron_assignments,
-            embedding_fourier_norms=embed_norms,
-            wl_fourier_norms=wl_norms,
-        )
+        acdc_summary = self.acdc_discoverer.get_circuit_summary(acdc_circuit)
+        acdc_viz = self.acdc_discoverer.visualize_circuit(acdc_circuit)
+        update(acdc_viz)
+
+        # Check consistency: do ACDC-identified components align with Fourier analysis?
+        consistency = self._check_consistency(fourier_circuit, acdc_summary)
+        update(f"\nConsistency check:")
+        update(f"  MLP pathway found by ACDC: {acdc_summary['has_mlp_path']}")
+        update(f"  (Expected: True, since MLP computes trig identities)")
+        update(f"  Attention heads in circuit: {acdc_summary['active_heads']}")
+        update(f"  Fourier key frequencies: {fourier_circuit.key_frequencies}")
+
+        return {
+            "fourier_circuit": fourier_circuit,
+            "acdc_circuit": acdc_circuit,
+            "acdc_summary": acdc_summary,
+            "acdc_visualization": acdc_viz,
+            "consistency": consistency,
+        }
+
+    def _check_consistency(self, fourier_circuit: DiscoveredCircuit,
+                           acdc_summary: dict) -> dict:
+        """
+        Check whether ACDC findings are consistent with Fourier analysis.
+        """
+        checks = {}
+
+        # Check 1: MLP should be in the circuit (it computes trig identities)
+        checks["mlp_in_circuit"] = acdc_summary["has_mlp_path"]
+
+        # Check 2: At least some attention heads should be present
+        # (they move information from input positions to output position)
+        checks["attention_present"] = len(acdc_summary["active_heads"]) > 0
+
+        # Check 3: Embeddings should connect to attention
+        # (embeddings encode Fourier components that attention must access)
+        checks["embed_to_attn"] = acdc_summary["edge_types"].get("embed_to_attn", 0) > 0
+
+        # Check 4: High Fourier FVE suggests clean circuit
+        checks["high_fourier_fve"] = fourier_circuit.fve_logits > 0.8
+
+        # Check 5: Verification accuracy
+        checks["high_verification_acc"] = fourier_circuit.verification_accuracy > 0.95
+
+        checks["all_consistent"] = all(checks.values())
+
+        return checks
 
 
 # =============================================================================
@@ -781,6 +1290,114 @@ def make_ablation_plot(ablation_results: dict) -> go.Figure:
     return fig
 
 
+def make_acdc_circuit_plot(acdc_summary: dict) -> go.Figure:
+    """Visualize the ACDC-discovered circuit as a network diagram using Plotly."""
+    # Create a simple layered graph visualization
+    active_nodes = acdc_summary["active_nodes"]
+    edge_details = acdc_summary["edge_details"]
+
+    # Assign positions based on layer
+    layer_positions = {
+        "tok_embed": (0, 0),
+        "pos_embed": (0, 1),
+    }
+
+    # Attention heads in layer 1
+    attn_heads = [n for n in active_nodes if n.startswith("attn_head_")]
+    for i, h in enumerate(sorted(attn_heads)):
+        layer_positions[h] = (1, i * 0.8)
+
+    # MLP in layer 2
+    if "mlp" in active_nodes:
+        layer_positions["mlp"] = (2, 0.5)
+
+    # Neuron groups
+    neuron_groups = [n for n in active_nodes if n.startswith("neuron_group_")]
+    for i, ng in enumerate(sorted(neuron_groups)):
+        layer_positions[ng] = (2, i * 0.3)
+
+    # Output in layer 3
+    if "unembed" in active_nodes:
+        layer_positions["unembed"] = (3, 0.5)
+
+    # Other nodes
+    for n in active_nodes:
+        if n not in layer_positions:
+            layer_positions[n] = (1.5, len(layer_positions) * 0.3)
+
+    fig = go.Figure()
+
+    # Draw edges
+    all_edges = []
+    for edge_type, edges in edge_details.items():
+        all_edges.extend(edges)
+
+    edge_x = []
+    edge_y = []
+    for parent, child in all_edges:
+        if parent in layer_positions and child in layer_positions:
+            x0, y0 = layer_positions[parent]
+            x1, y1 = layer_positions[child]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+
+    fig.add_trace(go.Scatter(
+        x=edge_x, y=edge_y,
+        mode="lines",
+        line=dict(width=1.5, color="rgba(100,100,100,0.5)"),
+        hoverinfo="none",
+        name="Edges",
+    ))
+
+    # Draw nodes
+    node_x = []
+    node_y = []
+    node_text = []
+    node_colors = []
+
+    color_map = {
+        "tok_embed": "orange",
+        "pos_embed": "orange",
+        "mlp": "green",
+        "unembed": "purple",
+    }
+
+    for node in active_nodes:
+        if node in layer_positions:
+            x, y = layer_positions[node]
+            node_x.append(x)
+            node_y.append(y)
+            node_text.append(node)
+            if node in color_map:
+                node_colors.append(color_map[node])
+            elif node.startswith("attn_head_"):
+                node_colors.append("blue")
+            elif node.startswith("neuron_group_"):
+                node_colors.append("lightgreen")
+            else:
+                node_colors.append("gray")
+
+    fig.add_trace(go.Scatter(
+        x=node_x, y=node_y,
+        mode="markers+text",
+        marker=dict(size=20, color=node_colors, line=dict(width=2, color="black")),
+        text=node_text,
+        textposition="top center",
+        textfont=dict(size=9),
+        name="Nodes",
+    ))
+
+    fig.update_layout(
+        title=f"ACDC Circuit ({acdc_summary['num_edges']} edges)",
+        xaxis=dict(title="Layer", showgrid=False),
+        yaxis=dict(title="", showgrid=False),
+        height=500,
+        showlegend=False,
+    )
+
+    return fig
+
+
 # =============================================================================
 # Gradio GUI
 # =============================================================================
@@ -797,6 +1414,7 @@ def build_gui():
         "test_accs": [],
         "metrics_table": [],
         "ablation_results": None,
+        "acdc_result": None,
     }
 
     def load_saved_metrics():
@@ -837,7 +1455,7 @@ def build_gui():
         return fig, df, log_text
 
     def discover_circuit(progress=gr.Progress()):
-        """Run circuit discovery on the trained model."""
+        """Run Fourier circuit discovery on the trained model."""
         if state["model"] is None:
             return "No model trained yet!", None, None, None, ""
 
@@ -880,6 +1498,128 @@ def build_gui():
 
         return summary, fourier_fig, neuron_fig, ablation_fig, log_text
 
+    def run_acdc_discovery(threshold, n_samples, granularity, progress=gr.Progress()):
+        """Run ACDC automatic circuit discovery."""
+        if state["model"] is None:
+            return "No model trained yet! Please train a model first.", None, "", ""
+
+        logs = []
+
+        def progress_cb(msg):
+            logs.append(msg)
+
+        progress(0.05, desc="Initializing ACDC...")
+
+        acdc = ACDCCircuitDiscoverer(state["model"], granularity=granularity)
+
+        progress(0.1, desc="Running ACDC algorithm...")
+        discovered_circuit = acdc.run_acdc(
+            threshold=float(threshold),
+            n_samples=int(n_samples),
+            progress_cb=progress_cb,
+        )
+
+        progress(0.85, desc="Generating summary...")
+        summary = acdc.get_circuit_summary(discovered_circuit)
+        viz_text = acdc.visualize_circuit(discovered_circuit)
+
+        progress(0.9, desc="Creating visualization...")
+        circuit_fig = make_acdc_circuit_plot(summary)
+
+        state["acdc_result"] = {
+            "circuit": discovered_circuit,
+            "summary": summary,
+            "visualization": viz_text,
+        }
+
+        # Build markdown summary
+        md_summary = (
+            f"## ACDC Circuit Discovery Results\n\n"
+            f"**Algorithm:** ACDC (Conmy et al., 2023)\n\n"
+            f"**Threshold (tau):** {threshold}\n\n"
+            f"**Granularity:** {granularity}\n\n"
+            f"**Edges:** {summary['num_edges']} / {acdc.graph.num_edges} "
+            f"({summary['num_edges']/acdc.graph.num_edges:.1%} retained)\n\n"
+            f"**Active Nodes:** {summary['num_active_nodes']} / {len(acdc.graph.nodes)}\n\n"
+            f"**Active Attention Heads:** {summary['active_heads']}\n\n"
+            f"### Edge Breakdown\n\n"
+        )
+        for edge_type, count in summary["edge_types"].items():
+            if count > 0:
+                md_summary += f"- {edge_type}: {count}\n"
+
+        md_summary += f"\n### Circuit Properties\n\n"
+        md_summary += f"- MLP pathway active: {'Yes' if summary['has_mlp_path'] else 'No'}\n"
+        md_summary += f"- Direct residual pathway: {'Yes' if summary['has_direct_path'] else 'No'}\n"
+
+        log_text = "\n".join(logs)
+        progress(1.0, desc="ACDC complete!")
+
+        return md_summary, circuit_fig, viz_text, log_text
+
+    def run_combined_discovery(acdc_threshold, n_samples, progress=gr.Progress()):
+        """Run combined Fourier + ACDC discovery."""
+        if state["model"] is None:
+            return "No model trained yet! Please train a model first.", None, None, None, ""
+
+        logs = []
+
+        def progress_cb(msg):
+            logs.append(msg)
+
+        progress(0.05, desc="Starting combined discovery...")
+
+        combined = CombinedCircuitDiscoverer(state["model"])
+        results = combined.full_discovery(
+            acdc_threshold=float(acdc_threshold),
+            n_samples=int(n_samples),
+            progress_cb=progress_cb,
+        )
+
+        progress(0.9, desc="Generating visualizations...")
+
+        fourier_circuit = results["fourier_circuit"]
+        acdc_summary = results["acdc_summary"]
+
+        fourier_fig = make_fourier_plot(
+            fourier_circuit.embedding_fourier_norms,
+            fourier_circuit.wl_fourier_norms,
+            fourier_circuit.key_frequencies,
+        )
+        acdc_fig = make_acdc_circuit_plot(acdc_summary)
+
+        # Consistency report
+        consistency = results["consistency"]
+        consistency_md = "## Cross-Validation Results\n\n"
+        for check_name, passed in consistency.items():
+            icon = "passed" if passed else "FAILED"
+            consistency_md += f"- {check_name}: {icon}\n"
+
+        # Combined summary
+        md_summary = (
+            f"## Combined Circuit Discovery\n\n"
+            f"### Fourier Analysis (Nanda et al. 2023)\n\n"
+            f"- Key frequencies: {fourier_circuit.key_frequencies}\n"
+            f"- Logit FVE: {fourier_circuit.fve_logits:.4f}\n"
+            f"- Verification accuracy: {fourier_circuit.verification_accuracy*100:.2f}%\n\n"
+            f"### ACDC (Conmy et al. 2023)\n\n"
+            f"- Edges retained: {acdc_summary['num_edges']}\n"
+            f"- Active heads: {acdc_summary['active_heads']}\n"
+            f"- MLP pathway: {'Active' if acdc_summary['has_mlp_path'] else 'Inactive'}\n\n"
+            f"{consistency_md}\n\n"
+            f"### Interpretation\n\n"
+            f"The Fourier analysis identifies WHAT the circuit computes "
+            f"(key frequencies {fourier_circuit.key_frequencies}, trig identities), "
+            f"while ACDC identifies HOW the circuit is structured "
+            f"(which {acdc_summary['num_active_nodes']} components and "
+            f"{acdc_summary['num_edges']} connections are essential).\n"
+        )
+
+        log_text = "\n".join(logs)
+        progress(1.0, desc="Combined discovery complete!")
+
+        return md_summary, fourier_fig, acdc_fig, consistency_md, log_text
+
     def view_saved_training_data():
         """Load and display saved training metrics and plot."""
         csv_path = os.path.join(SAVE_DIR, "training_metrics.csv")
@@ -897,15 +1637,16 @@ def build_gui():
 
     # Build the Gradio app
     with gr.Blocks(title="Grokking Circuit Discovery Tool", theme=gr.themes.Soft()) as demo:
-        gr.Markdown("# 🔬 Grokking Circuit Discovery & Verification Tool")
+        gr.Markdown("# Grokking Circuit Discovery & Verification Tool")
         gr.Markdown(
             "Train a small transformer on modular addition, observe grokking, "
-            "and automatically discover the Fourier multiplication circuit."
+            "and automatically discover the Fourier multiplication circuit using "
+            "both Fourier analysis (Nanda et al. 2023) and ACDC (Conmy et al. 2023)."
         )
 
         with gr.Tabs():
             # ===== TAB 1: Training =====
-            with gr.TabItem("🏋️ Training"):
+            with gr.TabItem("Training"):
                 gr.Markdown("### Model & Training Configuration")
                 with gr.Row():
                     with gr.Column(scale=1):
@@ -919,7 +1660,7 @@ def build_gui():
                         lr_input = gr.Number(value=1e-3, label="Learning rate")
                         wd_input = gr.Number(value=1.0, label="Weight decay")
 
-                train_btn = gr.Button("🚀 Train Model", variant="primary", size="lg")
+                train_btn = gr.Button("Train Model", variant="primary", size="lg")
 
                 gr.Markdown("### Training Progress")
                 training_plot = gr.Plot(label="Training Curves (Live)")
@@ -933,10 +1674,15 @@ def build_gui():
                     outputs=[training_plot, training_table, training_log],
                 )
 
-            # ===== TAB 2: Circuit Discovery =====
-            with gr.TabItem("🔍 Circuit Discovery"):
-                gr.Markdown("### Discover the Fourier Multiplication Circuit")
-                discover_btn = gr.Button("🔬 Discover Circuit", variant="primary", size="lg")
+            # ===== TAB 2: Fourier Circuit Discovery =====
+            with gr.TabItem("Fourier Discovery"):
+                gr.Markdown("### Discover the Fourier Multiplication Circuit (Nanda et al. 2023)")
+                gr.Markdown(
+                    "Analyzes the trained model's weights in Fourier space to identify "
+                    "key frequencies, verify trig identities in the MLP, and test the "
+                    "discovered formula exhaustively on all P*P inputs."
+                )
+                discover_btn = gr.Button("Discover Circuit", variant="primary", size="lg")
 
                 circuit_summary = gr.Markdown(label="Circuit Summary")
                 with gr.Row():
@@ -951,14 +1697,76 @@ def build_gui():
                     outputs=[circuit_summary, fourier_plot, neuron_plot, ablation_plot, discovery_log],
                 )
 
-            # ===== TAB 3: Saved Training Data =====
-            with gr.TabItem("📊 Saved Training Data"):
+            # ===== TAB 3: ACDC Circuit Discovery =====
+            with gr.TabItem("ACDC Discovery"):
+                gr.Markdown("### Automatic Circuit Discovery (Conmy et al. 2023)")
+                gr.Markdown(
+                    "Implements the ACDC algorithm which iterates from outputs to inputs "
+                    "through the computational graph, attempting to remove edges that don't "
+                    "significantly affect model performance (measured by KL divergence). "
+                    "This finds the minimal subgraph that implements the modular addition behavior."
+                )
+
+                with gr.Row():
+                    acdc_threshold = gr.Number(value=0.01, label="Threshold (tau)", info="Edges causing KL increase below this are removed")
+                    acdc_n_samples = gr.Number(value=512, label="N samples", precision=0, info="Number of data points for patching")
+                    acdc_granularity = gr.Dropdown(
+                        choices=["component", "fine", "neuron"],
+                        value="component",
+                        label="Granularity",
+                        info="Level of detail for computational graph",
+                    )
+
+                acdc_btn = gr.Button("Run ACDC", variant="primary", size="lg")
+
+                acdc_summary_md = gr.Markdown(label="ACDC Summary")
+                acdc_circuit_plot = gr.Plot(label="Circuit Diagram")
+                acdc_viz_text = gr.Textbox(label="Circuit Visualization (Text)", lines=20, interactive=False)
+                acdc_log = gr.Textbox(label="ACDC Log", lines=15, interactive=False)
+
+                acdc_btn.click(
+                    fn=run_acdc_discovery,
+                    inputs=[acdc_threshold, acdc_n_samples, acdc_granularity],
+                    outputs=[acdc_summary_md, acdc_circuit_plot, acdc_viz_text, acdc_log],
+                )
+
+            # ===== TAB 4: Combined Discovery =====
+            with gr.TabItem("Combined Discovery"):
+                gr.Markdown("### Combined Fourier + ACDC Analysis")
+                gr.Markdown(
+                    "Runs both Fourier analysis and ACDC, then cross-validates the results. "
+                    "Fourier analysis identifies WHAT the circuit computes (key frequencies, "
+                    "trig identities), while ACDC identifies HOW the circuit is structured "
+                    "(which components and connections are essential)."
+                )
+
+                with gr.Row():
+                    combined_threshold = gr.Number(value=0.01, label="ACDC Threshold (tau)")
+                    combined_n_samples = gr.Number(value=512, label="N samples", precision=0)
+
+                combined_btn = gr.Button("Run Combined Discovery", variant="primary", size="lg")
+
+                combined_summary_md = gr.Markdown(label="Combined Summary")
+                with gr.Row():
+                    combined_fourier_plot = gr.Plot(label="Fourier Analysis")
+                    combined_acdc_plot = gr.Plot(label="ACDC Circuit")
+                combined_consistency_md = gr.Markdown(label="Cross-Validation")
+                combined_log = gr.Textbox(label="Combined Log", lines=15, interactive=False)
+
+                combined_btn.click(
+                    fn=run_combined_discovery,
+                    inputs=[combined_threshold, combined_n_samples],
+                    outputs=[combined_summary_md, combined_fourier_plot, combined_acdc_plot, combined_consistency_md, combined_log],
+                )
+
+            # ===== TAB 5: Saved Training Data =====
+            with gr.TabItem("Saved Data"):
                 gr.Markdown("### View Previously Saved Training Metrics")
                 gr.Markdown(
                     f"Training metrics are automatically saved to `{SAVE_DIR}/training_metrics.csv` "
                     "after each training run."
                 )
-                load_btn = gr.Button("📂 Load Saved Data", variant="secondary")
+                load_btn = gr.Button("Load Saved Data", variant="secondary")
 
                 saved_table = gr.Dataframe(label="Saved Training Metrics", interactive=False)
                 saved_plot = gr.Plot(label="Saved Training Curves")
@@ -969,34 +1777,47 @@ def build_gui():
                     outputs=[saved_table, saved_plot],
                 )
 
-            # ===== TAB 4: About =====
-            with gr.TabItem("ℹ️ About"):
+            # ===== TAB 6: About =====
+            with gr.TabItem("About"):
                 gr.Markdown("""
                 ## About This Tool
 
-                This tool implements the circuit discovery methodology from:
+                This tool implements circuit discovery methodologies from two papers:
 
+                ### 1. Fourier Analysis (Nanda et al., 2023)
                 **"Progress Measures for Grokking via Mechanistic Interpretability"**
-                (Nanda et al., 2023)
 
-                ### What is Grokking?
-
-                Grokking is a phenomenon where a neural network first memorizes training data
-                (achieving high train accuracy but low test accuracy), then suddenly generalizes
-                after many more training steps.
-
-                ### The Fourier Multiplication Algorithm
-
-                The discovered circuit works as follows:
+                Discovers the Fourier multiplication algorithm by analyzing model weights
+                in Fourier space. The algorithm:
                 1. **Embedding**: Maps inputs to Fourier components (sin/cos at key frequencies)
                 2. **Attention**: Moves information from input positions to the output position
                 3. **MLP**: Computes trig identities to get cos(wk*(a+b)) from cos(wk*a), sin(wk*a), etc.
                 4. **Unembedding**: Converts back from Fourier space to logits via constructive interference
 
+                ### 2. ACDC (Conmy et al., 2023)
+                **"Towards Automated Circuit Discovery for Mechanistic Interpretability"**
+
+                Automatically finds the minimal computational subgraph (circuit) that implements
+                a behavior. The ACDC algorithm:
+                1. Starts with the full computational graph
+                2. Iterates from outputs to inputs (reverse topological order)
+                3. At each node, tests whether each incoming edge can be removed
+                4. Removes edges whose removal causes KL divergence increase below threshold tau
+                5. Returns the pruned subgraph as the discovered circuit
+
                 ### Key Metrics
                 - **FVE (Fraction of Variance Explained)**: How well the discovered formula explains model behavior
+                - **KL Divergence**: Measures how much the circuit's output differs from the full model
                 - **Ablation accuracy**: Confirms key frequencies are necessary and sufficient
-                - **Exhaustive verification**: Tests the formula on all P² possible inputs
+                - **Exhaustive verification**: Tests the formula on all P squared possible inputs
+                - **Compression ratio**: How much smaller the circuit is vs. the full graph
+
+                ### What is Grokking?
+
+                Grokking is a phenomenon where a neural network first memorizes training data
+                (achieving high train accuracy but low test accuracy), then suddenly generalizes
+                after many more training steps. This tool lets you observe grokking in real-time
+                and then reverse-engineer the algorithm the model learns.
                 """)
 
     return demo
