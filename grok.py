@@ -1149,6 +1149,15 @@ def format_circuit_report(circuit: DiscoveredCircuit, ablation: dict, config: di
     lines.append("=" * 74)
     return "\n".join(lines)
 
+def get_saved_runs():
+    """Get list of saved runs for dropdown."""
+    runs = []
+    if RUNS_DIR.exists():
+        for d in sorted(RUNS_DIR.iterdir()):
+            if d.is_dir() and (d / "config.json").exists():
+                runs.append(d.name)
+    return runs
+
 # =============================================================================
 # Gradio GUI
 # =============================================================================
@@ -1160,15 +1169,6 @@ def run_gui():
     state = {"model": None, "circuit": None, "ablation": None,
              "train_losses": [], "test_accs": [], "train_accs": [],
              "weight_norms": [], "trig_results": None, "config": None}
-
-    def get_saved_runs():
-        """Get list of saved runs for dropdown."""
-        runs = []
-        if RUNS_DIR.exists():
-            for d in sorted(RUNS_DIR.iterdir()):
-                if d.is_dir() and (d / "config.json").exists():
-                    runs.append(d.name)
-        return runs
 
     def train_and_discover(P, d_model, n_heads, d_mlp, train_frac, epochs,
                            lr, weight_decay, l2_lambda, operation, network_size,
@@ -1267,16 +1267,6 @@ def run_gui():
         return (training_fig, fourier_fig, circle_fig, neuron_fig,
                 logit_fig, trig_fig, ablation_fig, weight_fig, attn_fig,
                 report, log_text, gr.Dropdown(choices=get_saved_runs()))
-
-    def get_saved_runs():
-        """Get list of saved runs for dropdown."""
-        runs = []
-        if RUNS_DIR.exists():
-            for d in sorted(RUNS_DIR.iterdir()):
-                if d.is_dir() and (d / "config.json").exists():
-                    runs.append(d.name)
-        return runs
-
 
     def load_saved_run(run_name_str):
         """Load a previously saved run."""
