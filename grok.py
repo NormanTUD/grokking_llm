@@ -34,6 +34,82 @@ Usage:
     uv run circuit_extract.py
 """
 
+
+import sys
+import os
+import shutil
+import subprocess
+
+# =============================================================================
+# Auto-restart under `uv run` if invoked directly with python3
+# =============================================================================
+
+def _ensure_uv_run():
+    """
+    Detect if this script was invoked directly (e.g. `python3 grok.py`) rather
+    than via `uv run grok.py`. If so, attempt to re-exec under `uv run` with
+    all original arguments. If `uv` is not installed, print instructions and exit.
+    """
+    # If UV_RUN is set in the environment, we're already inside `uv run`
+    # uv sets several env vars when running; we check for the virtual env it creates
+    # A reliable heuristic: check if we're inside a uv-managed venv or if the
+    # parent process is uv. We use a custom env var approach for certainty.
+    if os.environ.get("_UV_RUN_ACTIVE") == "1":
+        return  # Already running under uv run, proceed normally
+
+    # We're NOT running under uv run — attempt to re-exec
+    uv_path = shutil.which("uv")
+
+    if uv_path is None:
+        print("=" * 60)
+        print("ERROR: This script must be run with `uv run` but `uv` was")
+        print("not found on your system.")
+        print("=" * 60)
+        print()
+        print("To install uv, run one of the following:")
+        print()
+        print("  # On macOS/Linux:")
+        print("  curl -LsSf https://astral.sh/uv/install.sh | sh")
+        print()
+        print("  # On Windows:")
+        print("  powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\"")
+        print()
+        print("  # Or via pip (not recommended):")
+        print("  pip install uv")
+        print()
+        print("Once installed, run this script with:")
+        print(f"  uv run {os.path.basename(__file__)}")
+        print()
+        print("=" * 60)
+        sys.exit(1)
+
+    # uv is available — re-exec this script under `uv run`
+    script_path = os.path.abspath(__file__)
+    # Pass along any extra CLI arguments the user may have provided
+    extra_args = sys.argv[1:]
+
+    cmd = [uv_path, "run", script_path] + extra_args
+
+    print(f"[auto-restart] Detected direct invocation (python3 {os.path.basename(__file__)})")
+    print(f"[auto-restart] Re-launching with: {' '.join(cmd)}")
+    print()
+
+    # Set the marker env var so the re-launched process knows it's under uv
+    env = os.environ.copy()
+    env["_UV_RUN_ACTIVE"] = "1"
+
+    # Replace the current process with uv run
+    if sys.platform == "win32":
+        # On Windows, os.execvpe may not work reliably; use subprocess instead
+        result = subprocess.run(cmd, env=env)
+        sys.exit(result.returncode)
+    else:
+        os.execvpe(uv_path, cmd, env)
+
+
+# Run the check immediately at import time, before any heavy imports
+_ensure_uv_run()
+
 import warnings
 import math
 import json
