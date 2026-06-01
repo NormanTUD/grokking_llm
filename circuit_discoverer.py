@@ -1,3 +1,7 @@
+import torch.nn as nn
+import numpy as np
+from modular_addition_transformer import ModularAdditionTransformer
+
 class CircuitDiscoverer:
     """
     Discovers the Fourier multiplication circuit in a trained modular addition

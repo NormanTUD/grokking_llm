@@ -1,3 +1,5 @@
+import torch.nn as nn
+
 class ModularAdditionTransformer(nn.Module):
     """
     1-layer transformer for modular addition, following Nanda et al. (2023).
