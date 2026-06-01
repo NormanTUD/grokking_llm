@@ -2363,6 +2363,189 @@ def build_gui():
 
         return fig, df, log_text
 
+    def generate_latex_equations(progress=gr.Progress()):
+        """Generate full LaTeX equations for the discovered circuit."""
+        if state["model"] is None or state["circuit"] is None:
+            return "No circuit discovered yet! Run Fourier Discovery first."
+
+        circuit = state["circuit"]
+        generator = CircuitLatexGenerator(
+            P=state["model"].P,
+            key_frequencies=circuit.key_frequencies,
+            neuron_assignments=circuit.neuron_frequency_assignments,
+        )
+
+        full_latex = generator.full_circuit_latex()
+
+        # Also generate per-frequency detailed equations
+        per_freq_latex = []
+        for k in circuit.key_frequencies:
+            per_freq_latex.append(generator.per_frequency_detail(k))
+
+        full_output = full_latex + "\n\n" + "\n\n".join(per_freq_latex)
+
+        # Also generate a "quick reference" card with the key equations
+        quick_ref = generate_quick_reference(
+            P=state["model"].P,
+            key_frequencies=circuit.key_frequencies,
+            fve=circuit.fve_logits,
+            verification_acc=circuit.verification_accuracy,
+            neuron_assignments=circuit.neuron_frequency_assignments,
+        )
+
+        return full_output, quick_ref
+
+
+    def generate_quick_reference(P: int, key_frequencies: list, fve: float,
+                                  verification_acc: float, neuron_assignments: dict) -> str:
+        """Generate a concise quick-reference card summarizing the circuit equations."""
+        freqs_str = ", ".join(str(k) for k in key_frequencies)
+        n_assigned = len(neuron_assignments)
+
+        # Count neurons per frequency
+        freq_neuron_counts = {}
+        for info in neuron_assignments.values():
+            freq = info.get("frequency")
+            freq_neuron_counts[freq] = freq_neuron_counts.get(freq, 0) + 1
+
+        neuron_breakdown = ", ".join(
+            f"k={k}: {freq_neuron_counts.get(k, 0)} neurons"
+            for k in key_frequencies
+        )
+
+        quick_ref = (
+            r"\section*{Quick Reference Card}" + "\n\n"
+            r"\begin{tcolorbox}[colback=blue!5!white, colframe=blue!75!black, title=Circuit Summary]" + "\n"
+            f"  \\textbf{{Task:}} $(a + b) \\bmod {P}$ \\hfill "
+            f"\\textbf{{FVE:}} {fve:.4f} \\hfill "
+            f"\\textbf{{Accuracy:}} {verification_acc*100:.2f}\\%\n\n"
+            f"  \\textbf{{Key frequencies:}} $\\mathcal{{K}} = \\{{{freqs_str}\\}}$ "
+            f"\\quad ({len(key_frequencies)} frequencies)\n\n"
+            f"  \\textbf{{Neurons assigned:}} {n_assigned}/512 \\quad ({neuron_breakdown})\n"
+            r"\end{tcolorbox}" + "\n\n"
+            r"\begin{tcolorbox}[colback=green!5!white, colframe=green!75!black, title=The Core Equation]" + "\n"
+            r"  \begin{equation*}" + "\n"
+            r"    \boxed{" + "\n"
+            r"      \text{Logit}(c \mid a, b) = "
+            r"\sum_{k \in \mathcal{K}} "
+            r"\underbrace{\alpha_k}_{\substack{\text{learned} \\ \text{amplitude}}} "
+            r"\cdot \underbrace{\cos\!\left(\frac{2\pi k (a + b - c)}{" + str(P) + r"}\right)}_{"
+            r"\substack{\text{max at } c = (a+b) \bmod " + str(P) + r" \\"
+            r"\text{(constructive interference)}}}"
+            r"    }" + "\n"
+            r"  \end{equation*}" + "\n"
+            r"\end{tcolorbox}" + "\n\n"
+            r"\begin{tcolorbox}[colback=orange!5!white, colframe=orange!75!black, title=Data Flow]" + "\n"
+            r"  \begin{equation*}" + "\n"
+            r"    \underbrace{a, b}_{\text{inputs}}"
+            r" \xrightarrow{\quad W_E \quad} "
+            r"\underbrace{\cos(\omega_k t), \sin(\omega_k t)}_{\text{Fourier embedding}}"
+            r" \xrightarrow{\quad \text{Attn} \quad} "
+            r"\underbrace{\text{degree-2 products}}_{\substack{\text{attn weight} \times \\ \text{OV output}}}"
+            r" \xrightarrow{\quad \text{MLP} \quad} "
+            r"\underbrace{\cos(\omega_k(a+b)), \sin(\omega_k(a+b))}_{\text{trig addition identities}}"
+            r" \xrightarrow{\quad W_U \quad} "
+            r"\underbrace{\cos(\omega_k(a+b-c))}_{\text{logits}}" + "\n"
+            r"  \end{equation*}" + "\n"
+            r"\end{tcolorbox}"
+        )
+
+        return quick_ref
+
+
+    def render_latex_to_display(progress=gr.Progress()):
+        """
+        Generate LaTeX equations and render them for display in the GUI.
+        Returns both raw LaTeX (for copy-paste into a .tex file) and
+        a Markdown-rendered version for in-app viewing.
+        """
+        if state["model"] is None or state["circuit"] is None:
+            return (
+                "⚠️ No circuit discovered yet! Run Fourier Discovery first.",
+                "No LaTeX generated.",
+                "No quick reference generated.",
+            )
+
+        circuit = state["circuit"]
+        progress(0.2, desc="Generating LaTeX equations...")
+
+        generator = CircuitLatexGenerator(
+            P=state["model"].P,
+            key_frequencies=circuit.key_frequencies,
+            neuron_assignments=circuit.neuron_frequency_assignments,
+        )
+
+        progress(0.5, desc="Building full equation set...")
+        full_latex = generator.full_circuit_latex()
+
+        # Per-frequency details
+        per_freq_sections = []
+        for k in circuit.key_frequencies:
+            per_freq_sections.append(generator.per_frequency_detail(k))
+
+        full_latex_with_details = full_latex + "\n\n" + "\n\n".join(per_freq_sections)
+
+        progress(0.7, desc="Generating quick reference...")
+        quick_ref = generate_quick_reference(
+            P=state["model"].P,
+            key_frequencies=circuit.key_frequencies,
+            fve=circuit.fve_logits,
+            verification_acc=circuit.verification_accuracy,
+            neuron_assignments=circuit.neuron_frequency_assignments,
+        )
+
+        progress(0.9, desc="Formatting for display...")
+
+        # Create a Markdown-friendly version with the key equations
+        # (Gradio supports LaTeX in Markdown via $...$ and $$...$$)
+        P = state["model"].P
+        freqs_str = ", ".join(str(k) for k in circuit.key_frequencies)
+
+        display_md = f"""## Circuit Equations for $(a + b) \\bmod {P}$
+
+### Key Frequencies
+$$\\mathcal{{K}} = \\{{{freqs_str}\\}}$$
+
+### Step 1: Embedding
+$$\\mathbf{{x}}^{{(0)}}_a = \\underbrace{{W_E \\cdot \\mathbf{{e}}_a}}_{{\\text{{token embedding of }} a}} + \\underbrace{{\\mathbf{{p}}_0}}_{{\\text{{positional embedding (pos 0)}}}}$$
+
+$$\\approx \\sum_{{k \\in \\mathcal{{K}}}} \\left[ \\underbrace{{\\alpha_k \\cos\\!\\left(\\frac{{2\\pi k \\cdot a}}{{{P}}}\\right)}}_{{\\text{{cosine from }} W_E}} \\cdot \\mathbf{{u}}_k^{{(\\cos)}} + \\underbrace{{\\beta_k \\sin\\!\\left(\\frac{{2\\pi k \\cdot a}}{{{P}}}\\right)}}_{{\\text{{sine from }} W_E}} \\cdot \\mathbf{{u}}_k^{{(\\sin)}} \\right]$$
+
+### Step 2: Attention (Move Info to Output Position)
+$$A^{{(j)}}_0 = \\underbrace{{\\sigma\\!\\left(\\text{{score}}^{{(j)}}_{{=\\to a}} - \\text{{score}}^{{(j)}}_{{=\\to b}}\\right)}}_{{\\text{{softmax over 2 elements = sigmoid of difference}}}}$$
+
+$$\\approx \\underbrace{{0.5}}_{{\\text{{uniform}}}} + \\underbrace{{\\gamma_j \\left(\\cos(\\omega_{{k_j}} a) - \\cos(\\omega_{{k_j}} b)\\right)}}_{{\\text{{periodic modulation from }} W_E^\\top W_K^{{\\top}} W_Q \\mathbf{{x}}_=}}$$
+
+### Step 3: MLP (Trig Identities)
+$$\\underbrace{{\\mathbf{{u}}_k^\\top \\cdot \\text{{MLP}}(a,b)}}_{{\\text{{project onto direction in }} W_L}} \\approx \\overbrace{{\\underbrace{{\\cos(\\omega_k a)\\cos(\\omega_k b)}}_{{\\text{{from attn products}}}} - \\underbrace{{\\sin(\\omega_k a)\\sin(\\omega_k b)}}_{{\\text{{from attn products}}}}}}^{{= \\cos(\\omega_k(a+b)) \\text{{ (addition formula)}}}}$$
+
+### Step 4: Unembedding (Fourier → Logits)
+$$\\text{{Logit}}(c \\mid a, b) \\approx \\sum_{{k \\in \\mathcal{{K}}}} \\underbrace{{\\alpha_k}}_{{\\text{{amplitude}}}} \\underbrace{{\\cos\\!\\left(\\frac{{2\\pi k(a+b-c)}}{{{P}}}\\right)}}_{{\\substack{{\\text{{peaks when }} c \\equiv a+b \\pmod{{{P}}}}} \\\\ \\text{{since }} \\cos(0) = 1}}$$
+
+### Step 5: Prediction
+$$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum_{{k \\in \\mathcal{{K}}}} \\alpha_k \\cos\\!\\left(\\frac{{2\\pi k(a+b-c)}}{{{P}}}\\right) = \\underbrace{{(a+b) \\bmod {P}}}_{{\\text{{constructive interference at correct answer}}}}$$
+
+### Verification
+- **FVE (Fraction of Variance Explained):** {circuit.fve_logits:.4f}
+- **Exhaustive verification accuracy:** {circuit.verification_accuracy*100:.2f}%
+- **Neurons assigned to key frequencies:** {len(circuit.neuron_frequency_assignments)}/512
+
+### Per-Frequency Neuron Counts
+"""
+        # Add per-frequency neuron counts
+        freq_neuron_counts = {}
+        for info in circuit.neuron_frequency_assignments.values():
+            freq = info.get("frequency")
+            freq_neuron_counts[freq] = freq_neuron_counts.get(freq, 0) + 1
+
+        for k in circuit.key_frequencies:
+            count = freq_neuron_counts.get(k, 0)
+            display_md += f"- $k = {k}$: {count} neurons, $\\omega_{{{k}}} = \\frac{{2\\pi \\cdot {k}}}{{{P}}}$\n"
+
+        progress(1.0, desc="Done!")
+
+        return display_md, full_latex_with_details, quick_ref
+
     def discover_circuit(progress=gr.Progress()):
         """Run Fourier circuit discovery on the trained model."""
         if state["model"] is None:
@@ -2879,6 +3062,57 @@ def build_gui():
                     outputs=[batch_result_table, batch_top_k_plot],
                 )
 
+            # ===== TAB: LaTeX Equations =====
+            with gr.TabItem("📐 LaTeX Equations"):
+                gr.Markdown("### Full LaTeX Equations for the Discovered Circuit")
+                gr.Markdown(
+                    "After running **Fourier Discovery**, click below to generate the complete "
+                    "set of LaTeX equations with `\\underbrace` and `\\overbrace` annotations "
+                    "showing exactly where each piece of data comes from. "
+                    "You can copy the raw LaTeX into any `.tex` file to compile a beautiful PDF, "
+                    "or view the rendered equations directly below."
+                )
+
+                latex_btn = gr.Button(
+                    "🧮 Generate Full LaTeX Equations",
+                    variant="primary",
+                    size="lg",
+                )
+
+                gr.Markdown("---")
+                gr.Markdown("#### Rendered Equations (in-app preview)")
+                latex_display_md = gr.Markdown(
+                    value="*Run Fourier Discovery first, then click the button above.*",
+                    label="Rendered Equations",
+                )
+
+                gr.Markdown("---")
+                gr.Markdown("#### Raw LaTeX (copy into a .tex file)")
+                gr.Markdown(
+                    "Copy this into a LaTeX document with `\\usepackage{amsmath}` and "
+                    "`\\usepackage{tcolorbox}` to compile."
+                )
+                latex_raw_output = gr.Textbox(
+                    label="Full LaTeX Source",
+                    lines=30,
+                    interactive=False,
+                    show_copy_button=True,
+                )
+
+                gr.Markdown("---")
+                gr.Markdown("#### Quick Reference Card (LaTeX)")
+                latex_quick_ref = gr.Textbox(
+                    label="Quick Reference LaTeX",
+                    lines=15,
+                    interactive=False,
+                    show_copy_button=True,
+                )
+
+                latex_btn.click(
+                    fn=render_latex_to_display,
+                    inputs=[],
+                    outputs=[latex_display_md, latex_raw_output, latex_quick_ref],
+                )
 
             # ===== TAB 7: About =====
             with gr.TabItem("About"):
