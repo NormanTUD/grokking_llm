@@ -42,9 +42,6 @@ import subprocess
 import time
 from pathlib import Path
 
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
 # =============================================================================
 # Auto-restart under `uv run` if invoked directly with python3
 # =============================================================================
@@ -127,6 +124,8 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 warnings.filterwarnings("ignore")
 
