@@ -48,14 +48,14 @@
 
 \begin{tcolorbox}[colback=blue!5!white, colframe=blue!75!black, title=Circuit Summary]
   \textbf{Task:} $(a + b) \bmod 113$ \hfill
-  \textbf{FVE:} 0.9384 \hfill
+  \textbf{FVE:} 0.9580 \hfill
   \textbf{Formula Accuracy:} 100.00\%
 
-  \textbf{Key frequencies:} $\mathcal{K} = \{1, 20, 25\}$
+  \textbf{Key frequencies:} $\mathcal{K} = \{3, 38, 51\}$
   \quad (3 frequencies)
 
-  \textbf{Neurons assigned:} 0/512
-  \quad ($k=1$: 0, $k=20$: 0, $k=25$: 0)
+  \textbf{Neurons assigned:} 2/512
+  \quad ($k=3$: 1, $k=38$: 1, $k=51$: 0)
 \end{tcolorbox}
 
 \begin{tcolorbox}[colback=green!5!white, colframe=green!75!black, title=The Core Equation]
@@ -88,11 +88,11 @@
 
 % =============================================================
 % FOURIER MULTIPLICATION CIRCUIT
-% P = 113, key frequencies k \in {1, 20, 25}
+% P = 113, key frequencies k \in {3, 38, 51}
 % =============================================================
 \section{Discovered Circuit: Fourier Multiplication Algorithm}
 
-The model computes $(a + b) \mod 113$ using 3 key frequencies $k \in \{1, 20, 25\}$ with angular frequencies $\omega_k = \frac{2\pi k}{113}$.
+The model computes $(a + b) \mod 113$ using 3 key frequencies $k \in \{3, 38, 51\}$ with angular frequencies $\omega_k = \frac{2\pi k}{113}$.
 
 \subsection{Step 1: Embedding (Token $\to$ Fourier Components)}
 
@@ -103,7 +103,7 @@ The embedding matrix $W_E$ maps each one-hot token $t \in \{0, \ldots, 112\}$ on
     &\approx \sum_{k \in \mathcal{K}} \bigg[ \underbrace{\alpha_k \cos\!\left(\frac{2\pi k \cdot a}{113}\right)}_{\substack{\text{cosine component} \\ \text{from } W_E \text{ row } a}} \cdot \mathbf{u}_k^{(\cos)} + \underbrace{\beta_k \sin\!\left(\frac{2\pi k \cdot a}{113}\right)}_{\substack{\text{sine component} \\ \text{from } W_E \text{ row } a}} \cdot \mathbf{u}_k^{(\sin)} \bigg]
 \end{align}
 
-where $\mathcal{K} = \{1, 20, 25\}$ are the key frequencies discovered via Fourier analysis of $W_E$.
+where $\mathcal{K} = \{3, 38, 51\}$ are the key frequencies discovered via Fourier analysis of $W_E$.
 
 Similarly for token $b$ at position 1:
 \begin{align}
@@ -183,19 +183,19 @@ A single cosine $\cos(\omega_k x)$ has period $113$ but near-maxima at other val
 \noindent\textbf{Step 1: Embed.} Compute Fourier components for each key frequency $k$:
 
 \begin{gather*}
-    k=1:\quad \cos\!\left(\tfrac{2\pi \cdot 1 \cdot 7}{113}\right),\; \sin\!\left(\tfrac{2\pi \cdot 1 \cdot 7}{113}\right),\; \cos\!\left(\tfrac{2\pi \cdot 1 \cdot 13}{113}\right),\; \sin\!\left(\tfrac{2\pi \cdot 1 \cdot 13}{113}\right)
+    k=3:\quad \cos\!\left(\tfrac{2\pi \cdot 3 \cdot 7}{113}\right),\; \sin\!\left(\tfrac{2\pi \cdot 3 \cdot 7}{113}\right),\; \cos\!\left(\tfrac{2\pi \cdot 3 \cdot 13}{113}\right),\; \sin\!\left(\tfrac{2\pi \cdot 3 \cdot 13}{113}\right)
     \\
-    k=20:\quad \cos\!\left(\tfrac{2\pi \cdot 20 \cdot 7}{113}\right),\; \sin\!\left(\tfrac{2\pi \cdot 20 \cdot 7}{113}\right),\; \cos\!\left(\tfrac{2\pi \cdot 20 \cdot 13}{113}\right),\; \sin\!\left(\tfrac{2\pi \cdot 20 \cdot 13}{113}\right)
+    k=38:\quad \cos\!\left(\tfrac{2\pi \cdot 38 \cdot 7}{113}\right),\; \sin\!\left(\tfrac{2\pi \cdot 38 \cdot 7}{113}\right),\; \cos\!\left(\tfrac{2\pi \cdot 38 \cdot 13}{113}\right),\; \sin\!\left(\tfrac{2\pi \cdot 38 \cdot 13}{113}\right)
     \\
-    k=25:\quad \cos\!\left(\tfrac{2\pi \cdot 25 \cdot 7}{113}\right),\; \sin\!\left(\tfrac{2\pi \cdot 25 \cdot 7}{113}\right),\; \cos\!\left(\tfrac{2\pi \cdot 25 \cdot 13}{113}\right),\; \sin\!\left(\tfrac{2\pi \cdot 25 \cdot 13}{113}\right)
+    k=51:\quad \cos\!\left(\tfrac{2\pi \cdot 51 \cdot 7}{113}\right),\; \sin\!\left(\tfrac{2\pi \cdot 51 \cdot 7}{113}\right),\; \cos\!\left(\tfrac{2\pi \cdot 51 \cdot 13}{113}\right),\; \sin\!\left(\tfrac{2\pi \cdot 51 \cdot 13}{113}\right)
 \end{gather*}
 
 \noindent\textbf{Step 2: MLP applies trig identity} $\cos(\alpha)\cos(\beta) - \sin(\alpha)\sin(\beta) = \cos(\alpha+\beta)$:
 
 \begin{gather*}
-    k=1:\quad \underbrace{\cos\!\left(\tfrac{2\pi \cdot 1 \cdot 7}{113}\right)\cos\!\left(\tfrac{2\pi \cdot 1 \cdot 13}{113}\right) - \sin\!\left(\tfrac{2\pi \cdot 1 \cdot 7}{113}\right)\sin\!\left(\tfrac{2\pi \cdot 1 \cdot 13}{113}\right)}_{= \cos\!\left(\tfrac{2\pi \cdot 1 \cdot 20}{113}\right)}
+    k=3:\quad \underbrace{\cos\!\left(\tfrac{2\pi \cdot 3 \cdot 7}{113}\right)\cos\!\left(\tfrac{2\pi \cdot 3 \cdot 13}{113}\right) - \sin\!\left(\tfrac{2\pi \cdot 3 \cdot 7}{113}\right)\sin\!\left(\tfrac{2\pi \cdot 3 \cdot 13}{113}\right)}_{= \cos\!\left(\tfrac{2\pi \cdot 3 \cdot 20}{113}\right)}
     \\[6pt]
-    k=20:\quad \underbrace{\cos\!\left(\tfrac{2\pi \cdot 20 \cdot 7}{113}\right)\cos\!\left(\tfrac{2\pi \cdot 20 \cdot 13}{113}\right) - \sin\!\left(\tfrac{2\pi \cdot 20 \cdot 7}{113}\right)\sin\!\left(\tfrac{2\pi \cdot 20 \cdot 13}{113}\right)}_{= \cos\!\left(\tfrac{2\pi \cdot 20 \cdot 20}{113}\right)}
+    k=38:\quad \underbrace{\cos\!\left(\tfrac{2\pi \cdot 38 \cdot 7}{113}\right)\cos\!\left(\tfrac{2\pi \cdot 38 \cdot 13}{113}\right) - \sin\!\left(\tfrac{2\pi \cdot 38 \cdot 7}{113}\right)\sin\!\left(\tfrac{2\pi \cdot 38 \cdot 13}{113}\right)}_{= \cos\!\left(\tfrac{2\pi \cdot 38 \cdot 20}{113}\right)}
 \end{gather*}
 
 \noindent\textbf{Step 3: Logit for correct answer} $c^* = (7+13) \bmod 113 = 20$:
@@ -206,79 +206,79 @@ A single cosine $\cos(\omega_k x)$ has period $113$ but near-maxima at other val
 
 For any $c \neq 20$, the cosines at different frequencies point in different directions and \textbf{destructively interfere}, giving a smaller logit.
 
-\subsubsection{Frequency $k = 1$: $\omega_{1} = \frac{2\pi \cdot 1}{113}$}
+\subsubsection{Frequency $k = 3$: $\omega_{3} = \frac{2\pi \cdot 3}{113}$}
 
 \noindent\textbf{Embedding:}
 \begin{align}
-    &\underbrace{W_E[a]}_{\text{row } a \text{ of } W_E} \xrightarrow{\text{DFT}} \underbrace{\cos\!\left(\tfrac{2\pi \cdot 1 \cdot a}{113}\right)}_{\text{component } k=1},\;\underbrace{\sin\!\left(\tfrac{2\pi \cdot 1 \cdot a}{113}\right)}_{\text{component } k=1}    \notag
+    &\underbrace{W_E[a]}_{\text{row } a \text{ of } W_E} \xrightarrow{\text{DFT}} \underbrace{\cos\!\left(\tfrac{2\pi \cdot 3 \cdot a}{113}\right)}_{\text{component } k=3},\;\underbrace{\sin\!\left(\tfrac{2\pi \cdot 3 \cdot a}{113}\right)}_{\text{component } k=3}    \notag
 \end{align}
 
 \noindent\textbf{Attention:}
 \begin{align}
-    &\underbrace{A^{(j)}_0 \approx 0.5 + \gamma_j\cos(\omega_{1} a)}_{\text{head } j \text{ tuned to freq } 1} \times \underbrace{\text{OV}^{(j)}(a) \approx \cos(\omega_{1} a)}_{\text{OV output at freq } 1}    \notag \\
-    &\quad \Rightarrow\;\underbrace{\cos^2(\omega_{1} a),\;\cos(\omega_{1} a)\cos(\omega_{1} b),\; \ldots}_{\text{degree-2 products from attn} \times \text{OV}}    \notag
+    &\underbrace{A^{(j)}_0 \approx 0.5 + \gamma_j\cos(\omega_{3} a)}_{\text{head } j \text{ tuned to freq } 3} \times \underbrace{\text{OV}^{(j)}(a) \approx \cos(\omega_{3} a)}_{\text{OV output at freq } 3}    \notag \\
+    &\quad \Rightarrow\;\underbrace{\cos^2(\omega_{3} a),\;\cos(\omega_{3} a)\cos(\omega_{3} b),\; \ldots}_{\text{degree-2 products from attn} \times \text{OV}}    \notag
 \end{align}
 
 \noindent\textbf{MLP (trig identity):}
 \begin{align}
-    &\underbrace{\text{neurons } n \in \text{cluster}_{1}}_{\text{0 neurons at freq } 1} \xrightarrow{\ReLU}    \notag \\
-    &\quad \overbrace{\underbrace{\cos(\omega_{1} a)\cos(\omega_{1} b)}_{\text{from attn}} - \underbrace{\sin(\omega_{1} a)\sin(\omega_{1} b)}_{\text{from attn}}}^{= \cos(\omega_{1}(a+b))}    \notag
+    &\underbrace{\text{neurons } n \in \text{cluster}_{3}}_{\text{1 neurons at freq } 3} \xrightarrow{\ReLU}    \notag \\
+    &\quad \overbrace{\underbrace{\cos(\omega_{3} a)\cos(\omega_{3} b)}_{\text{from attn}} - \underbrace{\sin(\omega_{3} a)\sin(\omega_{3} b)}_{\text{from attn}}}^{= \cos(\omega_{3}(a+b))}    \notag
 \end{align}
 
 \noindent\textbf{Unembedding:}
 \begin{align}
-    &\underbrace{\bu_{1}^\top \cdot \MLP}_{\text{project in } W_L} \approx \alpha_{1} \cos(\omega_{1}(a+b))    \notag \\
-    &\quad \xrightarrow{\times \cos(\omega_{1} c)} \underbrace{\alpha_{1} \cos(\omega_{1}(a+b-c))}_{\text{freq } 1 \text{ contribution to logit}(c)}    \notag
+    &\underbrace{\bu_{3}^\top \cdot \MLP}_{\text{project in } W_L} \approx \alpha_{3} \cos(\omega_{3}(a+b))    \notag \\
+    &\quad \xrightarrow{\times \cos(\omega_{3} c)} \underbrace{\alpha_{3} \cos(\omega_{3}(a+b-c))}_{\text{freq } 3 \text{ contribution to logit}(c)}    \notag
 \end{align}
 
-\subsubsection{Frequency $k = 20$: $\omega_{20} = \frac{2\pi \cdot 20}{113}$}
+\subsubsection{Frequency $k = 38$: $\omega_{38} = \frac{2\pi \cdot 38}{113}$}
 
 \noindent\textbf{Embedding:}
 \begin{align}
-    &\underbrace{W_E[a]}_{\text{row } a \text{ of } W_E} \xrightarrow{\text{DFT}} \underbrace{\cos\!\left(\tfrac{2\pi \cdot 20 \cdot a}{113}\right)}_{\text{component } k=20},\;\underbrace{\sin\!\left(\tfrac{2\pi \cdot 20 \cdot a}{113}\right)}_{\text{component } k=20}    \notag
+    &\underbrace{W_E[a]}_{\text{row } a \text{ of } W_E} \xrightarrow{\text{DFT}} \underbrace{\cos\!\left(\tfrac{2\pi \cdot 38 \cdot a}{113}\right)}_{\text{component } k=38},\;\underbrace{\sin\!\left(\tfrac{2\pi \cdot 38 \cdot a}{113}\right)}_{\text{component } k=38}    \notag
 \end{align}
 
 \noindent\textbf{Attention:}
 \begin{align}
-    &\underbrace{A^{(j)}_0 \approx 0.5 + \gamma_j\cos(\omega_{20} a)}_{\text{head } j \text{ tuned to freq } 20} \times \underbrace{\text{OV}^{(j)}(a) \approx \cos(\omega_{20} a)}_{\text{OV output at freq } 20}    \notag \\
-    &\quad \Rightarrow\;\underbrace{\cos^2(\omega_{20} a),\;\cos(\omega_{20} a)\cos(\omega_{20} b),\; \ldots}_{\text{degree-2 products from attn} \times \text{OV}}    \notag
+    &\underbrace{A^{(j)}_0 \approx 0.5 + \gamma_j\cos(\omega_{38} a)}_{\text{head } j \text{ tuned to freq } 38} \times \underbrace{\text{OV}^{(j)}(a) \approx \cos(\omega_{38} a)}_{\text{OV output at freq } 38}    \notag \\
+    &\quad \Rightarrow\;\underbrace{\cos^2(\omega_{38} a),\;\cos(\omega_{38} a)\cos(\omega_{38} b),\; \ldots}_{\text{degree-2 products from attn} \times \text{OV}}    \notag
 \end{align}
 
 \noindent\textbf{MLP (trig identity):}
 \begin{align}
-    &\underbrace{\text{neurons } n \in \text{cluster}_{20}}_{\text{0 neurons at freq } 20} \xrightarrow{\ReLU}    \notag \\
-    &\quad \overbrace{\underbrace{\cos(\omega_{20} a)\cos(\omega_{20} b)}_{\text{from attn}} - \underbrace{\sin(\omega_{20} a)\sin(\omega_{20} b)}_{\text{from attn}}}^{= \cos(\omega_{20}(a+b))}    \notag
+    &\underbrace{\text{neurons } n \in \text{cluster}_{38}}_{\text{1 neurons at freq } 38} \xrightarrow{\ReLU}    \notag \\
+    &\quad \overbrace{\underbrace{\cos(\omega_{38} a)\cos(\omega_{38} b)}_{\text{from attn}} - \underbrace{\sin(\omega_{38} a)\sin(\omega_{38} b)}_{\text{from attn}}}^{= \cos(\omega_{38}(a+b))}    \notag
 \end{align}
 
 \noindent\textbf{Unembedding:}
 \begin{align}
-    &\underbrace{\bu_{20}^\top \cdot \MLP}_{\text{project in } W_L} \approx \alpha_{20} \cos(\omega_{20}(a+b))    \notag \\
-    &\quad \xrightarrow{\times \cos(\omega_{20} c)} \underbrace{\alpha_{20} \cos(\omega_{20}(a+b-c))}_{\text{freq } 20 \text{ contribution to logit}(c)}    \notag
+    &\underbrace{\bu_{38}^\top \cdot \MLP}_{\text{project in } W_L} \approx \alpha_{38} \cos(\omega_{38}(a+b))    \notag \\
+    &\quad \xrightarrow{\times \cos(\omega_{38} c)} \underbrace{\alpha_{38} \cos(\omega_{38}(a+b-c))}_{\text{freq } 38 \text{ contribution to logit}(c)}    \notag
 \end{align}
 
-\subsubsection{Frequency $k = 25$: $\omega_{25} = \frac{2\pi \cdot 25}{113}$}
+\subsubsection{Frequency $k = 51$: $\omega_{51} = \frac{2\pi \cdot 51}{113}$}
 
 \noindent\textbf{Embedding:}
 \begin{align}
-    &\underbrace{W_E[a]}_{\text{row } a \text{ of } W_E} \xrightarrow{\text{DFT}} \underbrace{\cos\!\left(\tfrac{2\pi \cdot 25 \cdot a}{113}\right)}_{\text{component } k=25},\;\underbrace{\sin\!\left(\tfrac{2\pi \cdot 25 \cdot a}{113}\right)}_{\text{component } k=25}    \notag
+    &\underbrace{W_E[a]}_{\text{row } a \text{ of } W_E} \xrightarrow{\text{DFT}} \underbrace{\cos\!\left(\tfrac{2\pi \cdot 51 \cdot a}{113}\right)}_{\text{component } k=51},\;\underbrace{\sin\!\left(\tfrac{2\pi \cdot 51 \cdot a}{113}\right)}_{\text{component } k=51}    \notag
 \end{align}
 
 \noindent\textbf{Attention:}
 \begin{align}
-    &\underbrace{A^{(j)}_0 \approx 0.5 + \gamma_j\cos(\omega_{25} a)}_{\text{head } j \text{ tuned to freq } 25} \times \underbrace{\text{OV}^{(j)}(a) \approx \cos(\omega_{25} a)}_{\text{OV output at freq } 25}    \notag \\
-    &\quad \Rightarrow\;\underbrace{\cos^2(\omega_{25} a),\;\cos(\omega_{25} a)\cos(\omega_{25} b),\; \ldots}_{\text{degree-2 products from attn} \times \text{OV}}    \notag
+    &\underbrace{A^{(j)}_0 \approx 0.5 + \gamma_j\cos(\omega_{51} a)}_{\text{head } j \text{ tuned to freq } 51} \times \underbrace{\text{OV}^{(j)}(a) \approx \cos(\omega_{51} a)}_{\text{OV output at freq } 51}    \notag \\
+    &\quad \Rightarrow\;\underbrace{\cos^2(\omega_{51} a),\;\cos(\omega_{51} a)\cos(\omega_{51} b),\; \ldots}_{\text{degree-2 products from attn} \times \text{OV}}    \notag
 \end{align}
 
 \noindent\textbf{MLP (trig identity):}
 \begin{align}
-    &\underbrace{\text{neurons } n \in \text{cluster}_{25}}_{\text{0 neurons at freq } 25} \xrightarrow{\ReLU}    \notag \\
-    &\quad \overbrace{\underbrace{\cos(\omega_{25} a)\cos(\omega_{25} b)}_{\text{from attn}} - \underbrace{\sin(\omega_{25} a)\sin(\omega_{25} b)}_{\text{from attn}}}^{= \cos(\omega_{25}(a+b))}    \notag
+    &\underbrace{\text{neurons } n \in \text{cluster}_{51}}_{\text{0 neurons at freq } 51} \xrightarrow{\ReLU}    \notag \\
+    &\quad \overbrace{\underbrace{\cos(\omega_{51} a)\cos(\omega_{51} b)}_{\text{from attn}} - \underbrace{\sin(\omega_{51} a)\sin(\omega_{51} b)}_{\text{from attn}}}^{= \cos(\omega_{51}(a+b))}    \notag
 \end{align}
 
 \noindent\textbf{Unembedding:}
 \begin{align}
-    &\underbrace{\bu_{25}^\top \cdot \MLP}_{\text{project in } W_L} \approx \alpha_{25} \cos(\omega_{25}(a+b))    \notag \\
-    &\quad \xrightarrow{\times \cos(\omega_{25} c)} \underbrace{\alpha_{25} \cos(\omega_{25}(a+b-c))}_{\text{freq } 25 \text{ contribution to logit}(c)}    \notag
+    &\underbrace{\bu_{51}^\top \cdot \MLP}_{\text{project in } W_L} \approx \alpha_{51} \cos(\omega_{51}(a+b))    \notag \\
+    &\quad \xrightarrow{\times \cos(\omega_{51} c)} \underbrace{\alpha_{51} \cos(\omega_{51}(a+b-c))}_{\text{freq } 51 \text{ contribution to logit}(c)}    \notag
 \end{align}
 
 \end{document}
