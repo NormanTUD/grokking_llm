@@ -1,5 +1,7 @@
 from modular_addition_transformer import ModularAdditionTransformer
 from discovered_circuit import DiscoveredCircuit
+from circuit_discoverer import CircuitDiscoverer
+from acc_circuit_discoverer import ACDCCircuitDiscoverer
 
 class CombinedCircuitDiscoverer:
     """
