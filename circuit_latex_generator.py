@@ -216,7 +216,7 @@ class CircuitLatexGenerator:
         lines.append(r"Every symbol used in this document is defined below. "
                      r"Refer back to this table whenever a variable is unclear.")
         lines.append("")
-        lines.append(r"\begin{longtable}{|c|p{5cm}|p{5.5cm}|}")
+        lines.append(r"\begin{longtable}")
         lines.append(r"\hline")
         lines.append(r"\textbf{Symbol} & \textbf{Name / Meaning} & \textbf{Shape / Value} \\ \hline")
         lines.append(r"\endhead")
