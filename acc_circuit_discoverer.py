@@ -1,3 +1,8 @@
+import torch
+
+from computational_graph import ComputationalGraph
+from modular_addition_transformer import ModularAdditionTransformer
+
 class ACDCCircuitDiscoverer:
     """
     Implements the ACDC algorithm from Conmy et al. (2023).
