@@ -2075,11 +2075,6 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
                 )
 
                 gr.Markdown("---")
-                gr.Markdown("#### Raw LaTeX (copy into a .tex file)")
-                gr.Markdown(
-                    "Copy this into a LaTeX document with `\\usepackage{amsmath}` and "
-                    "`\\usepackage{tcolorbox}` to compile."
-                )
                 latex_raw_output = gr.Textbox(
                     label="Full LaTeX Source",
                     lines=30,
