@@ -495,107 +495,48 @@ class CircuitLatexGenerator:
         P = self.P
         freqs_str = ", ".join(str(k) for k in self.key_frequencies)
         n_heads = self._extracted.get("n_heads", 4)
+        d_mlp = self._extracted.get("d_mlp", 512)
 
         lines = []
         lines.append(r"\section{Circuit Architecture (TikZ Diagram)}")
         lines.append("")
         lines.append(r"\begin{figure}[htbp]")
         lines.append(r"\centering")
+        lines.append(r"\resizebox{\textwidth}{!}{%")
         lines.append(r"\begin{tikzpicture}[")
-        lines.append(r"    node distance=1.8cm and 2.5cm,")
-        lines.append(r"    block/.style={rectangle, draw, rounded corners, minimum width=3cm,")
-        lines.append(r"        minimum height=1cm, align=center, font=\small},")
-        lines.append(r"    data/.style={rectangle, draw, dashed, rounded corners, minimum width=2.5cm,")
+        lines.append(r"    node distance=2.0cm and 3.0cm,")
+        lines.append(r"    block/.style={rectangle, draw, rounded corners, minimum width=3.2cm,")
+        lines.append(r"        minimum height=1.1cm, align=center, font=\small},")
+        lines.append(r"    data/.style={rectangle, draw, dashed, rounded corners, minimum width=3cm,")
         lines.append(r"        minimum height=0.8cm, align=center, font=\footnotesize, fill=yellow!10},")
         lines.append(r"    arrow/.style={->, >=stealth, thick},")
-        lines.append(r"    label/.style={font=\scriptsize, align=center},")
-        lines.append(r"    brace/.style={decorate, decoration={brace, amplitude=5pt, raise=2pt}},")
+        lines.append(r"    lbl/.style={font=\scriptsize, align=center},")
         lines.append(r"    ]")
         lines.append("")
 
-        # Input layer
+        # Input layer — spread out more
         lines.append(r"    % === INPUT LAYER ===")
         lines.append(r"    \node[block, fill=orange!20] (input_a) {Token $a$\\(position 0)};")
-        lines.append(r"    \node[block, fill=orange!20, right=2cm of input_a] (input_b) {Token $b$\\(position 1)};")
-        lines.append(r"    \node[block, fill=orange!20, right=2cm of input_b] (input_eq) {Token ``$=$''\\(position 2)};")
+        lines.append(r"    \node[block, fill=orange!20, right=3cm of input_a] (input_b) {Token $b$\\(position 1)};")
+        lines.append(r"    \node[block, fill=orange!20, right=3cm of input_b] (input_eq) {Token ``$=$''\\(position 2)};")
         lines.append("")
 
         # Embedding layer
         lines.append(r"    % === EMBEDDING LAYER ===")
-        lines.append(r"    \node[block, fill=red!15, below=1.5cm of input_a] (embed_a) {$W_E \cdot \mathbf{e}_a + \mathbf{p}_0$};")
-        lines.append(r"    \node[block, fill=red!15, below=1.5cm of input_b] (embed_b) {$W_E \cdot \mathbf{e}_b + \mathbf{p}_1$};")
-        lines.append(r"    \node[block, fill=red!15, below=1.5cm of input_eq] (embed_eq) {$W_E \cdot \mathbf{e}_= + \mathbf{p}_2$};")
+        lines.append(r"    \draw[arrow] (unembed) -- node[right, lbl] "
+                     r"{logits $\in \mathbb{R}^{" + str(P) + r"}$} (output);")
         lines.append("")
 
-        # Data annotations for embedding
-        lines.append(r"    \node[data, below=0.3cm of embed_a] (fourier_a) {$\cos(\omega_k a),\; \sin(\omega_k a)$};")
-        lines.append(r"    \node[data, below=0.3cm of embed_b] (fourier_b) {$\cos(\omega_k b),\; \sin(\omega_k b)$};")
-        lines.append("")
-
-        # Attention layer
-        lines.append(r"    % === ATTENTION LAYER ===")
-        lines.append(r"    \node[block, fill=blue!15, below=3.5cm of embed_eq] (attn) {")
-        lines.append(r"        Attention\\($" + str(n_heads) + r"$ heads from ``$=$'' to $a, b$)};")
-        lines.append("")
-
-        # Attention detail
-        lines.append(r"    \node[data, left=0.5cm of attn] (attn_detail) {")
-        lines.append(r"        $A^{(j)}_0 \approx 0.5 + \gamma_j \cos(\omega_k a)$\\")
-        lines.append(r"        $\times\; W_O W_V \mathbf{x}^{(0)}_a$\\")
-        lines.append(r"        $\Rightarrow$ degree-2 products};")
-        lines.append("")
-
-        # MLP layer
-        lines.append(r"    % === MLP LAYER ===")
-        lines.append(r"    \node[block, fill=green!15, below=2.5cm of attn] (mlp) {")
-        lines.append(r"        MLP ($" + str(self._extracted.get('d_mlp', 512)) + r"$ neurons)\\")
-        lines.append(r"        $\text{ReLU}(W_{\text{in}} \cdot \mathbf{x}^{(1)} + b_{\text{in}})$};")
-        lines.append("")
-
-        # MLP detail - trig identity
-        lines.append(r"    \node[data, right=0.5cm of mlp] (mlp_detail) {")
-        lines.append(r"        $\cos(\omega_k a)\cos(\omega_k b) - \sin(\omega_k a)\sin(\omega_k b)$\\")
-        lines.append(r"        $= \cos(\omega_k(a+b))$ \quad (addition formula)};")
-        lines.append("")
-
-        # Unembed layer
-        lines.append(r"    % === UNEMBEDDING LAYER ===")
-        lines.append(r"    \node[block, fill=purple!15, below=2.5cm of mlp] (unembed) {")
-        lines.append(r"        Unembed: $W_L = W_{\text{out}}^\top W_U^\top$\\")
-        lines.append(r"        Projects onto $\cos(\omega_k c),\; \sin(\omega_k c)$};")
-        lines.append("")
-
-        # Output
-        lines.append(r"    % === OUTPUT ===")
-        lines.append(r"    \node[block, fill=violet!20, below=2cm of unembed] (output) {")
-        lines.append(r"        $\text{Logit}(c) = \displaystyle\sum_{k \in \mathcal{K}} \alpha_k \cos(\omega_k(a+b-c))$\\[4pt]")
-        lines.append(r"        $\hat{c} = \arg\max_c \;\text{Logit}(c) = (a+b) \bmod " + str(P) + r"$};")
-        lines.append("")
-
-        # Draw arrows
-        lines.append(r"    % === ARROWS ===")
-        lines.append(r"    \draw[arrow] (input_a) -- (embed_a);")
-        lines.append(r"    \draw[arrow] (input_b) -- (embed_b);")
-        lines.append(r"    \draw[arrow] (input_eq) -- (embed_eq);")
-        lines.append(r"    \draw[arrow] (embed_a) -- (fourier_a);")
-        lines.append(r"    \draw[arrow] (embed_b) -- (fourier_b);")
-        lines.append(r"    \draw[arrow] (fourier_a.south) |- ([yshift=0.5cm]attn.west) -- (attn.west);")
-        lines.append(r"    \draw[arrow] (fourier_b.south) |- ([yshift=-0.3cm]attn.north west) -- (attn.north);")
-        lines.append(r"    \draw[arrow] (embed_eq) |- (attn.east);")
-        lines.append(r"    \draw[arrow] (attn) -- node[right, label] {$\mathbf{x}^{(1)}$ (residual stream)} (mlp);")
-        lines.append(r"    \draw[arrow] (mlp) -- node[right, label] {MLP activations $\in \mathbb{R}^{" + str(self._extracted.get('d_mlp', 512)) + r"}$} (unembed);")
-        lines.append(r"    \draw[arrow] (unembed) -- node[right, label] {logits $\in \mathbb{R}^{" + str(P) + r"}$} (output);")
-        lines.append("")
-
-        # Frequency annotation
+        # Frequency annotation box — placed to the right of the embedding layer
         lines.append(r"    % === FREQUENCY ANNOTATION ===")
         lines.append(r"    \node[draw, rounded corners, fill=gray!10, font=\footnotesize,")
-        lines.append(r"        text width=4cm, align=center, right=3cm of embed_eq] (freq_box) {")
+        lines.append(r"        text width=4.5cm, align=center, right=2.5cm of embed_eq] (freq_box) {")
         lines.append(r"        \textbf{Key Frequencies}\\$\mathcal{K} = \{" + freqs_str + r"\}$\\[3pt]")
         lines.append(r"        $\omega_k = \frac{2\pi k}{" + str(P) + r"}$};")
         lines.append("")
 
         lines.append(r"\end{tikzpicture}")
+        lines.append(r"}")  # closes \resizebox
         lines.append(r"\caption{Data flow pipeline of the Fourier multiplication circuit. ")
         lines.append(r"Tokens $a$ and $b$ are embedded into Fourier components, attention moves them to the output position, ")
         lines.append(r"the MLP computes trigonometric addition identities, and the unembedding reads off logits via constructive interference.}")
@@ -603,6 +544,7 @@ class CircuitLatexGenerator:
         lines.append(r"\end{figure}")
 
         return "\n".join(lines)
+
 
     # =========================================================================
     # SECTION HEADER
