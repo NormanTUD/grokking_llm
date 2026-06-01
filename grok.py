@@ -2193,7 +2193,293 @@ def make_ablation_plot(ablation_results: dict) -> go.Figure:
     fig.update_layout(title_text="Ablation Test: Key Frequencies are Necessary & Sufficient", height=400)
 
     return fig
+def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0, dim_y: int = 1, show_all_tokens: bool = True) -> go.Figure:
+    """
+    Plot token embeddings projected onto a chosen pair of dimensions.
+    Shows circles with real coordinate values for each token.
+    
+    For a grokked model, pairs of dimensions corresponding to key frequencies
+    will show tokens arranged in circles (Fourier structure).
+    """
+    P = model.P
+    W_E = model.embed.weight[:P].detach().cpu().numpy()  # (P, d_model)
+    
+    x_coords = W_E[:, dim_x]
+    y_coords = W_E[:, dim_y]
+    
+    fig = go.Figure()
+    
+    # Plot all token positions
+    fig.add_trace(go.Scatter(
+        x=x_coords,
+        y=y_coords,
+        mode="markers+text",
+        marker=dict(size=10, color=np.arange(P), colorscale="HSL", showscale=True, 
+                    colorbar=dict(title="Token ID")),
+        text=[str(i) for i in range(P)],
+        textposition="top center",
+        textfont=dict(size=7),
+        customdata=np.stack([
+            np.arange(P),
+            x_coords,
+            y_coords,
+        ], axis=-1),
+        hovertemplate=(
+            "Token: %{customdata[0]:.0f}<br>"
+            f"Dim {dim_x}: %{{customdata[1]:.4f}}<br>"
+            f"Dim {dim_y}: %{{customdata[2]:.4f}}<br>"
+            "<extra></extra>"
+        ),
+        name="Token Embeddings",
+    ))
+    
+    # Fit and draw a circle to show the circular structure
+    center_x, center_y = x_coords.mean(), y_coords.mean()
+    radii = np.sqrt((x_coords - center_x)**2 + (y_coords - center_y)**2)
+    avg_radius = radii.mean()
+    
+    theta = np.linspace(0, 2*np.pi, 200)
+    circle_x = center_x + avg_radius * np.cos(theta)
+    circle_y = center_y + avg_radius * np.sin(theta)
+    
+    fig.add_trace(go.Scatter(
+        x=circle_x, y=circle_y,
+        mode="lines",
+        line=dict(color="rgba(255,0,0,0.3)", width=2, dash="dash"),
+        name=f"Fitted circle (r={avg_radius:.3f})",
+        hoverinfo="skip",
+    ))
+    
+    # Add annotations showing the actual values for a few tokens
+    for token_id in [0, P//4, P//2, 3*P//4]:
+        fig.add_annotation(
+            x=x_coords[token_id], y=y_coords[token_id],
+            text=f"t={token_id}<br>({x_coords[token_id]:.3f}, {y_coords[token_id]:.3f})",
+            showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=1,
+            font=dict(size=9, color="red"),
+        )
+    
+    fig.update_layout(
+        title=f"Embedding Space: Dim {dim_x} vs Dim {dim_y} (P={P})",
+        xaxis_title=f"Dimension {dim_x}",
+        yaxis_title=f"Dimension {dim_y}",
+        xaxis=dict(scaleanchor="y", scaleratio=1),  # Equal aspect ratio
+        height=650,
+        width=700,
+    )
+    
+    return fig
 
+
+def make_embedding_all_dims_heatmap(model: ModularAdditionTransformer, token_id: int = 0) -> go.Figure:
+    """
+    Show ALL embedding dimensions for a selected token as a heatmap/bar chart.
+    This lets you inspect every dimension's value for any token.
+    """
+    P = model.P
+    W_E = model.embed.weight[:P].detach().cpu().numpy()  # (P, d_model)
+    d_model = W_E.shape[1]
+    
+    token_embedding = W_E[token_id]  # (d_model,)
+    
+    fig = make_subplots(rows=2, cols=1, 
+                        subplot_titles=(
+                            f"All {d_model} Embedding Dimensions for Token {token_id}",
+                            f"Embedding Heatmap (Tokens × Dimensions)"
+                        ),
+                        row_heights=[0.4, 0.6],
+                        vertical_spacing=0.12)
+    
+    # Bar chart of all dimensions for selected token
+    colors = ["red" if abs(v) > np.std(token_embedding) * 2 else "steelblue" 
+              for v in token_embedding]
+    
+    fig.add_trace(go.Bar(
+        x=list(range(d_model)),
+        y=token_embedding,
+        marker_color=colors,
+        name=f"Token {token_id}",
+        hovertemplate="Dim %{x}: %{y:.4f}<extra></extra>",
+    ), row=1, col=1)
+    
+    # Heatmap of all tokens × all dimensions (or a subset)
+    # Show a window of tokens around the selected one
+    window = min(30, P)
+    start = max(0, token_id - window//2)
+    end = min(P, start + window)
+    
+    fig.add_trace(go.Heatmap(
+        z=W_E[start:end, :],
+        x=list(range(d_model)),
+        y=[str(i) for i in range(start, end)],
+        colorscale="RdBu_r",
+        zmid=0,
+        hovertemplate="Token %{y}, Dim %{x}: %{z:.4f}<extra></extra>",
+        name="Embedding Matrix",
+    ), row=2, col=1)
+    
+    fig.update_xaxes(title_text="Dimension", row=1, col=1)
+    fig.update_yaxes(title_text="Value", row=1, col=1)
+    fig.update_xaxes(title_text="Dimension", row=2, col=1)
+    fig.update_yaxes(title_text="Token ID", row=2, col=1)
+    fig.update_layout(height=800, showlegend=False)
+    
+    return fig
+
+def make_layer_activation_plots(model: ModularAdditionTransformer, a: int, b: int) -> dict:
+    """
+    Run a single (a, b) input through the model and capture what comes out
+    of EVERY layer and sub-component. Returns a dict of plotly figures.
+
+    Shows:
+    - Token + positional embeddings
+    - Each attention head's output (per-head)
+    - Attention weights (which positions attend to which)
+    - Residual stream after attention
+    - MLP pre-activations (before ReLU)
+    - MLP hidden activations (after ReLU)
+    - MLP output
+    - Final residual stream
+    - Logits
+    """
+    P = model.P
+    a_tensor = torch.tensor([a])
+    b_tensor = torch.tensor([b])
+
+    with torch.no_grad():
+        logits, activations = model.forward_with_hooks(a_tensor, b_tensor)
+
+    figures = {}
+    correct = (a + b) % P
+
+    # --- 1. Embeddings ---
+    tok_emb = activations["tok_embed"][0].numpy()  # (3, d_model)
+    pos_emb = activations["pos_embed"][0].numpy()  # (3, d_model)
+    combined_emb = activations["embed"][0].numpy()  # (3, d_model)
+
+    fig_embed = make_subplots(rows=3, cols=1,
+                              subplot_titles=("Token Embedding", "Positional Embedding", "Combined (Token + Pos)"),
+                              vertical_spacing=0.08)
+
+    for row, (data, name) in enumerate([(tok_emb, "Token"), (pos_emb, "Position"), (combined_emb, "Combined")], 1):
+        for pos_idx, pos_name in enumerate(["a", "b", "="]):
+            fig_embed.add_trace(go.Scatter(
+                y=data[pos_idx], mode="lines", name=f"{pos_name} ({name})",
+                hovertemplate=f"Pos={pos_name} Dim %{{x}}: %{{y:.4f}}<extra></extra>",
+            ), row=row, col=1)
+
+    fig_embed.update_layout(height=700, title=f"Embeddings for a={a}, b={b}")
+    figures["embeddings"] = fig_embed
+
+    # --- 2. Attention Weights ---
+    attn_weights = activations["attn_weights"][0].numpy()  # (n_heads, 1, 2)
+
+    fig_attn = go.Figure()
+    head_names = [f"Head {h}" for h in range(model.n_heads)]
+    attn_to_a = attn_weights[:, 0, 0]  # attention to position 0 (token a)
+    attn_to_b = attn_weights[:, 0, 1]  # attention to position 1 (token b)
+
+    fig_attn.add_trace(go.Bar(name="Attn to 'a'", x=head_names, y=attn_to_a, marker_color="blue"))
+    fig_attn.add_trace(go.Bar(name="Attn to 'b'", x=head_names, y=attn_to_b, marker_color="orange"))
+    fig_attn.update_layout(barmode="group", title=f"Attention Weights (from '=' to a,b) | a={a}, b={b}",
+                           yaxis_title="Weight", height=350)
+    figures["attention_weights"] = fig_attn
+
+    # --- 3. Per-Head Attention Outputs ---
+    fig_heads = make_subplots(rows=model.n_heads, cols=1,
+                              subplot_titles=[f"Head {h} Output" for h in range(model.n_heads)],
+                              vertical_spacing=0.05)
+
+    for h in range(model.n_heads):
+        head_out = activations[f"attn_head_{h}"][0, 0].numpy()  # (d_head,)
+        fig_heads.add_trace(go.Bar(
+            y=head_out, name=f"Head {h}",
+            hovertemplate=f"Head {h} Dim %{{x}}: %{{y:.4f}}<extra></extra>",
+        ), row=h+1, col=1)
+
+    fig_heads.update_layout(height=200*model.n_heads, title="Per-Head Attention Outputs", showlegend=False)
+    figures["attn_head_outputs"] = fig_heads
+
+    # --- 4. Combined Attention Output ---
+    attn_out = activations["attn_out"][0, 0].numpy()  # (d_model,)
+    fig_attn_out = go.Figure(go.Bar(y=attn_out,
+                                     hovertemplate="Dim %{x}: %{y:.4f}<extra></extra>"))
+    fig_attn_out.update_layout(title=f"Combined Attention Output (W_O applied) | a={a}, b={b}",
+                               height=300, xaxis_title="Dimension", yaxis_title="Value")
+    figures["attn_combined_output"] = fig_attn_out
+
+    # --- 5. Residual Stream (mid) ---
+    residual_mid = activations["residual_mid"][0, 0].numpy()  # (d_model,)
+    fig_res_mid = go.Figure(go.Bar(y=residual_mid,
+                                    hovertemplate="Dim %{x}: %{y:.4f}<extra></extra>"))
+    fig_res_mid.update_layout(title=f"Residual Stream (after attention, before MLP) | a={a}, b={b}",
+                              height=300, xaxis_title="Dimension", yaxis_title="Value")
+    figures["residual_mid"] = fig_res_mid
+
+    # --- 6. MLP Pre-activations (before ReLU) ---
+    mlp_pre = activations["mlp_pre"][0, 0].numpy()  # (d_mlp,)
+    fig_mlp_pre = go.Figure()
+    colors_pre = ["green" if v > 0 else "red" for v in mlp_pre]
+    fig_mlp_pre.add_trace(go.Bar(y=mlp_pre, marker_color=colors_pre,
+                                  hovertemplate="Neuron %{x}: %{y:.4f}<extra></extra>"))
+    fig_mlp_pre.update_layout(title=f"MLP Pre-Activations (before ReLU) | a={a}, b={b} | "
+                              f"{(mlp_pre > 0).sum()}/{len(mlp_pre)} positive",
+                              height=350, xaxis_title="Neuron Index", yaxis_title="Pre-activation")
+    figures["mlp_pre"] = fig_mlp_pre
+
+    # --- 7. MLP Hidden (after ReLU) ---
+    mlp_hidden = activations["mlp_hidden"][0, 0].numpy()  # (d_mlp,)
+    fig_mlp_hidden = go.Figure()
+    # Highlight active neurons
+    active_mask = mlp_hidden > 0
+    fig_mlp_hidden.add_trace(go.Bar(
+        y=mlp_hidden,
+        marker_color=["green" if a else "lightgray" for a in active_mask],
+        hovertemplate="Neuron %{x}: %{y:.4f}<extra></extra>",
+    ))
+    fig_mlp_hidden.update_layout(
+        title=f"MLP Hidden (after ReLU) | a={a}, b={b} | "
+              f"{active_mask.sum()}/{len(mlp_hidden)} active neurons",
+        height=350, xaxis_title="Neuron Index", yaxis_title="Activation",
+    )
+    figures["mlp_hidden"] = fig_mlp_hidden
+
+    # --- 8. MLP Output ---
+    mlp_out = activations["mlp_out"][0, 0].numpy()  # (d_model,)
+    fig_mlp_out = go.Figure(go.Bar(y=mlp_out,
+                                    hovertemplate="Dim %{x}: %{y:.4f}<extra></extra>"))
+    fig_mlp_out.update_layout(title=f"MLP Output (projected back to d_model) | a={a}, b={b}",
+                              height=300, xaxis_title="Dimension", yaxis_title="Value")
+    figures["mlp_output"] = fig_mlp_out
+
+    # --- 9. Final Residual Stream ---
+    residual_final = activations["residual_final"][0, 0].numpy()  # (d_model,)
+    fig_res_final = go.Figure(go.Bar(y=residual_final,
+                                      hovertemplate="Dim %{x}: %{y:.4f}<extra></extra>"))
+    fig_res_final.update_layout(title=f"Final Residual Stream (before unembed) | a={a}, b={b}",
+                                height=300, xaxis_title="Dimension", yaxis_title="Value")
+    figures["residual_final"] = fig_res_final
+
+    # --- 10. Logits ---
+    logits_np = activations["logits"][0].numpy()  # (P,)
+    top_k = 10
+    top_indices = np.argsort(logits_np)[-top_k:][::-1]
+
+    fig_logits = go.Figure()
+    colors_logits = ["green" if idx == correct else "steelblue" for idx in range(P)]
+    fig_logits.add_trace(go.Bar(
+        x=list(range(P)), y=logits_np, marker_color=colors_logits,
+        hovertemplate="Class %{x}: %{y:.4f}<extra></extra>",
+    ))
+    fig_logits.add_annotation(x=correct, y=logits_np[correct],
+                              text=f"CORRECT: {correct}", showarrow=True, arrowhead=2)
+    fig_logits.update_layout(
+        title=f"Output Logits | a={a}, b={b} | correct={(a+b)%P} | predicted={logits_np.argmax()}",
+        height=350, xaxis_title="Output Class", yaxis_title="Logit Value",
+    )
+    figures["logits"] = fig_logits
+
+    return figures
 
 def make_acdc_circuit_plot(acdc_summary: dict) -> go.Figure:
     """Visualize the ACDC-discovered circuit as a network diagram using Plotly."""
@@ -3285,6 +3571,98 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
                     inputs=[],
                     outputs=[latex_display_md, latex_raw_output, latex_quick_ref],
                 )
+
+            # ===== TAB: Live Activation Viewer =====
+            with gr.TabItem("🔬 Live Activations"):
+                gr.Markdown("### Live Layer-by-Layer Activation Viewer")
+                gr.Markdown(
+                    "Enter `a` and `b` to see what comes out of **every** component in the network: "
+                    "embeddings, each attention head, the dense MLP layers (pre/post ReLU), "
+                    "residual streams, and final logits — all with real values."
+                )
+                
+                with gr.Row():
+                    live_a = gr.Number(value=7, label="Input a", precision=0)
+                    live_b = gr.Number(value=13, label="Input b", precision=0)
+                    live_btn = gr.Button("🔍 Run & Visualize All Layers", variant="primary")
+                
+                gr.Markdown("---")
+                gr.Markdown("#### Embedding Space (Circle View)")
+                with gr.Row():
+                    dim_x_select = gr.Number(value=0, label="X Dimension", precision=0)
+                    dim_y_select = gr.Number(value=1, label="Y Dimension", precision=0)
+                    token_select = gr.Number(value=0, label="Token ID (for all-dims view)", precision=0)
+                
+                with gr.Row():
+                    embed_circle_btn = gr.Button("Show Embedding Circle")
+                    embed_alldims_btn = gr.Button("Show All Dimensions for Token")
+                
+                embed_circle_plot = gr.Plot(label="Embedding Circle (2D projection)")
+                embed_alldims_plot = gr.Plot(label="All Embedding Dimensions")
+                
+                gr.Markdown("---")
+                gr.Markdown("#### Layer Outputs (Live)")
+                
+                embed_plot = gr.Plot(label="Embeddings (Token + Positional + Combined)")
+                attn_weights_plot = gr.Plot(label="Attention Weights")
+                attn_heads_plot = gr.Plot(label="Per-Head Attention Outputs")
+                attn_combined_plot = gr.Plot(label="Combined Attention Output (after W_O)")
+                residual_mid_plot = gr.Plot(label="Residual Stream (mid)")
+                mlp_pre_plot = gr.Plot(label="MLP Pre-Activations (before ReLU)")
+                mlp_hidden_plot = gr.Plot(label="MLP Hidden (after ReLU)")
+                mlp_out_plot = gr.Plot(label="MLP Output")
+                residual_final_plot = gr.Plot(label="Final Residual Stream")
+                logits_plot = gr.Plot(label="Output Logits")
+                
+                def run_live_activations(a, b):
+                    if state["model"] is None:
+                        empty = go.Figure()
+                        return [empty] * 10
+                    
+                    figs = make_layer_activation_plots(state["model"], int(a), int(b))
+                    return [
+                        figs["embeddings"],
+                        figs["attention_weights"],
+                        figs["attn_head_outputs"],
+                        figs["attn_combined_output"],
+                        figs["residual_mid"],
+                        figs["mlp_pre"],
+                        figs["mlp_hidden"],
+                        figs["mlp_output"],
+                        figs["residual_final"],
+                        figs["logits"],
+                    ]
+                
+                def show_embed_circle(dim_x, dim_y):
+                    if state["model"] is None:
+                        return go.Figure()
+                    return make_embedding_circle_plot(state["model"], int(dim_x), int(dim_y))
+                
+                def show_embed_alldims(token_id):
+                    if state["model"] is None:
+                        return go.Figure()
+                    return make_embedding_all_dims_heatmap(state["model"], int(token_id))
+                
+                live_btn.click(
+                    fn=run_live_activations,
+                    inputs=[live_a, live_b],
+                    outputs=[embed_plot, attn_weights_plot, attn_heads_plot, 
+                             attn_combined_plot, residual_mid_plot, mlp_pre_plot,
+                             mlp_hidden_plot, mlp_out_plot, residual_final_plot, logits_plot],
+                )
+                
+                embed_circle_btn.click(
+                    fn=show_embed_circle,
+                    inputs=[dim_x_select, dim_y_select],
+                    outputs=[embed_circle_plot],
+                )
+                
+                embed_alldims_btn.click(
+                    fn=show_embed_alldims,
+                    inputs=[token_select],
+                    outputs=[embed_alldims_plot],
+                )
+
 
             # ===== TAB 7: About =====
             with gr.TabItem("About"):
