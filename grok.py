@@ -3095,8 +3095,7 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
                 latex_raw_output = gr.Textbox(
                     label="Full LaTeX Source",
                     lines=30,
-                    interactive=False,
-                    show_copy_button=True,
+                    interactive=False
                 )
 
                 gr.Markdown("---")
@@ -3104,8 +3103,7 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
                 latex_quick_ref = gr.Textbox(
                     label="Quick Reference LaTeX",
                     lines=15,
-                    interactive=False,
-                    show_copy_button=True,
+                    interactive=False
                 )
 
                 latex_btn.click(
