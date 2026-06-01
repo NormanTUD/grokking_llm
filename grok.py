@@ -3616,22 +3616,35 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
                 
                 def run_live_activations(a, b):
                     if state["model"] is None:
-                        empty = go.Figure()
+                        empty = go.Figure().update_layout(
+                            title="⚠️ No model loaded! Train or load a model first.",
+                            annotations=[dict(
+                                text="No model available.<br>Go to Training tab or Saved Runs tab first.",
+                                xref="paper", yref="paper", x=0.5, y=0.5,
+                                showarrow=False, font=dict(size=16, color="red")
+                            )]
+                        )
                         return [empty] * 10
-                    
-                    figs = make_layer_activation_plots(state["model"], int(a), int(b))
-                    return [
-                        figs["embeddings"],
-                        figs["attention_weights"],
-                        figs["attn_head_outputs"],
-                        figs["attn_combined_output"],
-                        figs["residual_mid"],
-                        figs["mlp_pre"],
-                        figs["mlp_hidden"],
-                        figs["mlp_output"],
-                        figs["residual_final"],
-                        figs["logits"],
-                    ]
+
+                    try:
+                        figs = make_layer_activation_plots(state["model"], int(a), int(b))
+                        return [
+                            figs["embeddings"],
+                            figs["attention_weights"],
+                            figs["attn_head_outputs"],
+                            figs["attn_combined_output"],
+                            figs["residual_mid"],
+                            figs["mlp_pre"],
+                            figs["mlp_hidden"],
+                            figs["mlp_output"],
+                            figs["residual_final"],
+                            figs["logits"],
+                        ]
+                    except Exception as e:
+                        error_fig = go.Figure().update_layout(
+                            title=f"❌ Error: {str(e)}",
+                        )
+                        return [error_fig] * 10
                 
                 def show_embed_circle(dim_x, dim_y):
                     if state["model"] is None:
