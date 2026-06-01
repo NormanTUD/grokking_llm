@@ -2179,24 +2179,6 @@ def build_gui():
                     outputs=[combined_summary_md, combined_fourier_plot, combined_acdc_plot, combined_consistency_md, combined_log],
                 )
 
-            # ===== TAB 5: Saved Training Data =====
-            with gr.TabItem("Saved Data"):
-                gr.Markdown("### View Previously Saved Training Metrics")
-                gr.Markdown(
-                    f"Training metrics are automatically saved to `{SAVE_DIR}/training_metrics.csv` "
-                    "after each training run."
-                )
-                load_btn = gr.Button("Load Saved Data", variant="secondary")
-
-                saved_table = gr.Dataframe(label="Saved Training Metrics", interactive=False)
-                saved_plot = gr.Plot(label="Saved Training Curves")
-
-                load_btn.click(
-                    fn=view_saved_training_data,
-                    inputs=[],
-                    outputs=[saved_table, saved_plot],
-                )
-
             with gr.TabItem("Saved Runs"):
                 gr.Markdown("### Load a Previous Training Run")
                 refresh_btn = gr.Button("Refresh Run List")
