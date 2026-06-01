@@ -1379,7 +1379,7 @@ class CircuitLatexGenerator:
         lines.append(r"\begin{center}")
         lines.append(r"\begin{tikzpicture}[yscale=0.05, xscale=0.8]")
         lines.append(r"    \draw[->] (0,0) -- (7,0) node[right] {\footnotesize $c$};")
-        lines.append(r"    \draw[->] (0,-5) -- (0," + str(int(max(logit_correct if isinstance(logit_correct, (int, float)) else 10, 10) * 1.2)) + r") node[above] {\footnotesize Logit};")
+        lines.append(r"    \draw[->] (0,-5) -- (0," + str(int(max(total_logit if isinstance(total_logit, (int, float)) else 10, 10) * 1.2)) + r") node[above] {\footnotesize Logit};")
 
         # Show a few bars
         classes_to_show = [self.c_star, c_wrong, (self.c_star + 5) % self.P, (self.c_star + 10) % self.P]
