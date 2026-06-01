@@ -131,287 +131,6 @@ warnings.filterwarnings("ignore")
 SAVE_DIR = "training_logs"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-def find_circular_dimension_pairs(model: ModularAdditionTransformer,
-                                   key_frequencies: list[int] = None,
-                                   top_k_pairs: int = 5) -> list[dict]:
-    """
-    Automatically find dimension pairs in the embedding space that show
-    circular structure (i.e., tokens arranged on a circle).
-
-    Strategy:
-    1. If key_frequencies are known, project embeddings onto the Fourier basis
-       and find the (cos_k, sin_k) direction pairs — these are guaranteed circles.
-    2. Also do a brute-force search using circularity score (variance of radii)
-       over all dimension pairs, but only report the top-k.
-
-    Returns a list of dicts: [{dim_x, dim_y, frequency, circularity_score, description}, ...]
-    """
-    P = model.P
-    d_model = model.d_model
-    W_E = model.embed.weight[:P].detach().cpu().numpy()  # (P, d_model)
-
-    results = []
-
-    # === Method 1: Fourier-basis projection (best if key_frequencies known) ===
-    if key_frequencies:
-        # Build Fourier basis
-        fourier_basis = np.zeros((P, P))
-        fourier_basis[0] = np.ones(P) / np.sqrt(P)
-        for k in range(1, P // 2 + 1):
-            fourier_basis[2*k - 1] = np.cos(2 * np.pi * k * np.arange(P) / P) * np.sqrt(2/P)
-            if 2*k < P:
-                fourier_basis[2*k] = np.sin(2 * np.pi * k * np.arange(P) / P) * np.sqrt(2/P)
-
-        # Project embedding onto Fourier basis: (P, P) @ (P, d_model) -> (P, d_model)
-        # Each row of W_E_fourier corresponds to a Fourier component
-        W_E_fourier = fourier_basis @ W_E  # (P, d_model)
-
-        for k in key_frequencies:
-            # The cos and sin rows for frequency k
-            cos_row = W_E_fourier[2*k - 1]  # (d_model,) — direction of cos(2πk·t/P)
-            sin_row = W_E_fourier[2*k] if 2*k < P else np.zeros(d_model)  # direction of sin(2πk·t/P)
-
-            # Project all token embeddings onto these two directions
-            # This gives us the "natural" 2D plane for frequency k
-            x_proj = W_E @ cos_row / (np.linalg.norm(cos_row)**2 + 1e-10)  # (P,)
-            y_proj = W_E @ sin_row / (np.linalg.norm(sin_row)**2 + 1e-10)  # (P,)
-
-            # Compute circularity score
-            cx, cy = x_proj.mean(), y_proj.mean()
-            radii = np.sqrt((x_proj - cx)**2 + (y_proj - cy)**2)
-            mean_r = radii.mean()
-            circularity = 1.0 - (radii.std() / (mean_r + 1e-10))  # 1.0 = perfect circle
-
-            results.append({
-                "dim_x": f"fourier_cos_{k}",
-                "dim_y": f"fourier_sin_{k}",
-                "frequency": k,
-                "circularity_score": float(circularity),
-                "x_coords": x_proj,
-                "y_coords": y_proj,
-                "description": f"Frequency k={k}: Fourier projection (cos_{k}, sin_{k})",
-                "method": "fourier",
-            })
-
-    # === Method 2: PCA on embedding to find top circular planes ===
-    # Use SVD to find principal components, then check pairs for circularity
-    from scipy.linalg import svd
-    W_centered = W_E - W_E.mean(axis=0, keepdims=True)
-    U, S, Vt = svd(W_centered, full_matrices=False)
-
-    # Check top principal component pairs for circularity
-    n_components_to_check = min(20, d_model)
-
-    pair_scores = []
-    for i in range(n_components_to_check):
-        for j in range(i+1, n_components_to_check):
-            x_proj = U[:, i] * S[i]
-            y_proj = U[:, j] * S[j]
-
-            cx, cy = x_proj.mean(), y_proj.mean()
-            radii = np.sqrt((x_proj - cx)**2 + (y_proj - cy)**2)
-            mean_r = radii.mean()
-            if mean_r < 1e-10:
-                continue
-            circularity = 1.0 - (radii.std() / mean_r)
-
-            # Also check if tokens are evenly spaced (angular uniformity)
-            angles = np.arctan2(y_proj - cy, x_proj - cx)
-            sorted_angles = np.sort(angles)
-            angle_diffs = np.diff(sorted_angles)
-            angular_uniformity = 1.0 - (angle_diffs.std() / (angle_diffs.mean() + 1e-10))
-
-            combined_score = 0.7 * circularity + 0.3 * angular_uniformity
-
-            pair_scores.append({
-                "dim_x": f"PC_{i}",
-                "dim_y": f"PC_{j}",
-                "pc_i": i,
-                "pc_j": j,
-                "frequency": None,  # Unknown — could detect by counting cycles
-                "circularity_score": float(combined_score),
-                "x_coords": x_proj,
-                "y_coords": y_proj,
-                "description": f"PCA pair (PC{i}, PC{j}): circularity={combined_score:.3f}",
-                "method": "pca",
-            })
-
-    # Sort by score and take top-k
-    pair_scores.sort(key=lambda x: -x["circularity_score"])
-    results.extend(pair_scores[:top_k_pairs])
-
-    # === Method 3: Raw dimension pairs (fast scan) ===
-    # Only check if d_model is small enough, or sample randomly
-    if d_model <= 32:
-        raw_pairs = [(i, j) for i in range(d_model) for j in range(i+1, d_model)]
-    else:
-        # Sample random pairs + pairs near high-variance dimensions
-        variances = W_E.var(axis=0)
-        top_dims = np.argsort(variances)[-20:]  # Top 20 highest-variance dims
-        raw_pairs = [(int(top_dims[i]), int(top_dims[j]))
-                     for i in range(len(top_dims)) for j in range(i+1, len(top_dims))]
-
-    raw_scores = []
-    for (i, j) in raw_pairs:
-        x_proj = W_E[:, i]
-        y_proj = W_E[:, j]
-        cx, cy = x_proj.mean(), y_proj.mean()
-        radii = np.sqrt((x_proj - cx)**2 + (y_proj - cy)**2)
-        mean_r = radii.mean()
-        if mean_r < 1e-10:
-            continue
-        circularity = 1.0 - (radii.std() / mean_r)
-        raw_scores.append({
-            "dim_x": i,
-            "dim_y": j,
-            "frequency": None,
-            "circularity_score": float(circularity),
-            "x_coords": x_proj,
-            "y_coords": y_proj,
-            "description": f"Raw dims ({i}, {j}): circularity={circularity:.3f}",
-            "method": "raw",
-        })
-
-    raw_scores.sort(key=lambda x: -x["circularity_score"])
-    results.extend(raw_scores[:top_k_pairs])
-
-    # Sort all results by circularity score
-    results.sort(key=lambda x: -x["circularity_score"])
-
-    return results
-
-
-def make_auto_circle_plot(model: ModularAdditionTransformer,
-                          pair_info: dict) -> go.Figure:
-    """
-    Create a circle plot from a pre-computed pair_info dict
-    (as returned by find_circular_dimension_pairs).
-    """
-    P = model.P
-    x_coords = pair_info["x_coords"]
-    y_coords = pair_info["y_coords"]
-
-    fig = go.Figure()
-
-    # Color by token ID to show ordering
-    fig.add_trace(go.Scatter(
-        x=x_coords,
-        y=y_coords,
-        mode="markers+text",
-        marker=dict(size=10, color=np.arange(P), colorscale="hsv", showscale=True,
-                    colorbar=dict(title="Token ID")),
-        text=[str(i) for i in range(P)],
-        textposition="top center",
-        textfont=dict(size=7),
-        hovertemplate=(
-            "Token: %{text}<br>"
-            "x: %{x:.4f}<br>"
-            "y: %{y:.4f}<br>"
-            "<extra></extra>"
-        ),
-        name="Tokens",
-    ))
-
-    # Fit circle
-    cx, cy = x_coords.mean(), y_coords.mean()
-    radii = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
-    avg_r = radii.mean()
-
-    theta = np.linspace(0, 2*np.pi, 200)
-    fig.add_trace(go.Scatter(
-        x=cx + avg_r * np.cos(theta),
-        y=cy + avg_r * np.sin(theta),
-        mode="lines",
-        line=dict(color="rgba(255,0,0,0.3)", width=2, dash="dash"),
-        name=f"Fitted circle (r={avg_r:.3f})",
-        hoverinfo="skip",
-    ))
-
-    # Draw lines connecting consecutive tokens to show the winding
-    for i in range(P):
-        j = (i + 1) % P
-        fig.add_trace(go.Scatter(
-            x=[x_coords[i], x_coords[j]],
-            y=[y_coords[i], y_coords[j]],
-            mode="lines",
-            line=dict(color="rgba(150,150,150,0.15)", width=0.5),
-            showlegend=False,
-            hoverinfo="skip",
-        ))
-
-    circularity = pair_info["circularity_score"]
-    freq_str = f" (freq k={pair_info['frequency']})" if pair_info.get("frequency") else ""
-
-    fig.update_layout(
-        title=f"{pair_info['description']}<br>Circularity: {circularity:.4f}{freq_str}",
-        xaxis_title=pair_info["dim_x"] if isinstance(pair_info["dim_x"], str) else f"Dim {pair_info['dim_x']}",
-        yaxis_title=pair_info["dim_y"] if isinstance(pair_info["dim_y"], str) else f"Dim {pair_info['dim_y']}",
-        xaxis=dict(scaleanchor="y", scaleratio=1),
-        height=600,
-        width=650,
-    )
-
-    return fig
-
-
-def make_all_circles_summary(model: ModularAdditionTransformer,
-                             key_frequencies: list[int] = None) -> go.Figure:
-    """
-    Create a summary figure showing ALL discovered circles in a grid.
-    This is the "one-click" view that replaces manual dimension hunting.
-    """
-    pairs = find_circular_dimension_pairs(model, key_frequencies, top_k_pairs=3)
-
-    n_plots = min(len(pairs), 8)
-    n_cols = min(4, n_plots)
-    n_rows = (n_plots + n_cols - 1) // n_cols
-
-    fig = make_subplots(
-        rows=n_rows, cols=n_cols,
-        subplot_titles=[p["description"][:50] for p in pairs[:n_plots]],
-        horizontal_spacing=0.08,
-        vertical_spacing=0.12,
-    )
-
-    P = model.P
-
-    for idx, pair in enumerate(pairs[:n_plots]):
-        row = idx // n_cols + 1
-        col = idx % n_cols + 1
-
-        x_coords = pair["x_coords"]
-        y_coords = pair["y_coords"]
-
-        fig.add_trace(go.Scatter(
-            x=x_coords, y=y_coords,
-            mode="markers",
-            marker=dict(size=4, color=np.arange(P), colorscale="hsv", showscale=False),
-            hovertemplate="Token %{text}<extra></extra>",
-            text=[str(i) for i in range(P)],
-            showlegend=False,
-        ), row=row, col=col)
-
-        # Fitted circle
-        cx, cy = x_coords.mean(), y_coords.mean()
-        radii = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
-        avg_r = radii.mean()
-        theta = np.linspace(0, 2*np.pi, 100)
-        fig.add_trace(go.Scatter(
-            x=cx + avg_r * np.cos(theta),
-            y=cy + avg_r * np.sin(theta),
-            mode="lines",
-            line=dict(color="rgba(255,0,0,0.3)", width=1, dash="dash"),
-            showlegend=False,
-            hoverinfo="skip",
-        ), row=row, col=col)
-
-    fig.update_layout(
-        height=300 * n_rows,
-        title_text="Auto-Discovered Circular Structures in Embedding Space",
-    )
-
-    return fig
-
 # =============================================================================
 # LaTeX Equation Generator for Discovered Circuits
 # =============================================================================
@@ -1173,6 +892,288 @@ class ModularAdditionTransformer(nn.Module):
         residual = x[:, 2:3, :] + attn_out
         mlp_hidden = F.relu(self.mlp_in(residual))
         return mlp_hidden.squeeze(1), attn  # (batch, d_mlp), (batch, n_heads, 1, 2)
+
+def find_circular_dimension_pairs(model: ModularAdditionTransformer,
+                                   key_frequencies: list[int] = None,
+                                   top_k_pairs: int = 5) -> list[dict]:
+    """
+    Automatically find dimension pairs in the embedding space that show
+    circular structure (i.e., tokens arranged on a circle).
+
+    Strategy:
+    1. If key_frequencies are known, project embeddings onto the Fourier basis
+       and find the (cos_k, sin_k) direction pairs — these are guaranteed circles.
+    2. Also do a brute-force search using circularity score (variance of radii)
+       over all dimension pairs, but only report the top-k.
+
+    Returns a list of dicts: [{dim_x, dim_y, frequency, circularity_score, description}, ...]
+    """
+    P = model.P
+    d_model = model.d_model
+    W_E = model.embed.weight[:P].detach().cpu().numpy()  # (P, d_model)
+
+    results = []
+
+    # === Method 1: Fourier-basis projection (best if key_frequencies known) ===
+    if key_frequencies:
+        # Build Fourier basis
+        fourier_basis = np.zeros((P, P))
+        fourier_basis[0] = np.ones(P) / np.sqrt(P)
+        for k in range(1, P // 2 + 1):
+            fourier_basis[2*k - 1] = np.cos(2 * np.pi * k * np.arange(P) / P) * np.sqrt(2/P)
+            if 2*k < P:
+                fourier_basis[2*k] = np.sin(2 * np.pi * k * np.arange(P) / P) * np.sqrt(2/P)
+
+        # Project embedding onto Fourier basis: (P, P) @ (P, d_model) -> (P, d_model)
+        # Each row of W_E_fourier corresponds to a Fourier component
+        W_E_fourier = fourier_basis @ W_E  # (P, d_model)
+
+        for k in key_frequencies:
+            # The cos and sin rows for frequency k
+            cos_row = W_E_fourier[2*k - 1]  # (d_model,) — direction of cos(2πk·t/P)
+            sin_row = W_E_fourier[2*k] if 2*k < P else np.zeros(d_model)  # direction of sin(2πk·t/P)
+
+            # Project all token embeddings onto these two directions
+            # This gives us the "natural" 2D plane for frequency k
+            x_proj = W_E @ cos_row / (np.linalg.norm(cos_row)**2 + 1e-10)  # (P,)
+            y_proj = W_E @ sin_row / (np.linalg.norm(sin_row)**2 + 1e-10)  # (P,)
+
+            # Compute circularity score
+            cx, cy = x_proj.mean(), y_proj.mean()
+            radii = np.sqrt((x_proj - cx)**2 + (y_proj - cy)**2)
+            mean_r = radii.mean()
+            circularity = 1.0 - (radii.std() / (mean_r + 1e-10))  # 1.0 = perfect circle
+
+            results.append({
+                "dim_x": f"fourier_cos_{k}",
+                "dim_y": f"fourier_sin_{k}",
+                "frequency": k,
+                "circularity_score": float(circularity),
+                "x_coords": x_proj,
+                "y_coords": y_proj,
+                "description": f"Frequency k={k}: Fourier projection (cos_{k}, sin_{k})",
+                "method": "fourier",
+            })
+
+    # === Method 2: PCA on embedding to find top circular planes ===
+    # Use SVD to find principal components, then check pairs for circularity
+    from scipy.linalg import svd
+    W_centered = W_E - W_E.mean(axis=0, keepdims=True)
+    U, S, Vt = svd(W_centered, full_matrices=False)
+
+    # Check top principal component pairs for circularity
+    n_components_to_check = min(20, d_model)
+
+    pair_scores = []
+    for i in range(n_components_to_check):
+        for j in range(i+1, n_components_to_check):
+            x_proj = U[:, i] * S[i]
+            y_proj = U[:, j] * S[j]
+
+            cx, cy = x_proj.mean(), y_proj.mean()
+            radii = np.sqrt((x_proj - cx)**2 + (y_proj - cy)**2)
+            mean_r = radii.mean()
+            if mean_r < 1e-10:
+                continue
+            circularity = 1.0 - (radii.std() / mean_r)
+
+            # Also check if tokens are evenly spaced (angular uniformity)
+            angles = np.arctan2(y_proj - cy, x_proj - cx)
+            sorted_angles = np.sort(angles)
+            angle_diffs = np.diff(sorted_angles)
+            angular_uniformity = 1.0 - (angle_diffs.std() / (angle_diffs.mean() + 1e-10))
+
+            combined_score = 0.7 * circularity + 0.3 * angular_uniformity
+
+            pair_scores.append({
+                "dim_x": f"PC_{i}",
+                "dim_y": f"PC_{j}",
+                "pc_i": i,
+                "pc_j": j,
+                "frequency": None,  # Unknown — could detect by counting cycles
+                "circularity_score": float(combined_score),
+                "x_coords": x_proj,
+                "y_coords": y_proj,
+                "description": f"PCA pair (PC{i}, PC{j}): circularity={combined_score:.3f}",
+                "method": "pca",
+            })
+
+    # Sort by score and take top-k
+    pair_scores.sort(key=lambda x: -x["circularity_score"])
+    results.extend(pair_scores[:top_k_pairs])
+
+    # === Method 3: Raw dimension pairs (fast scan) ===
+    # Only check if d_model is small enough, or sample randomly
+    if d_model <= 32:
+        raw_pairs = [(i, j) for i in range(d_model) for j in range(i+1, d_model)]
+    else:
+        # Sample random pairs + pairs near high-variance dimensions
+        variances = W_E.var(axis=0)
+        top_dims = np.argsort(variances)[-20:]  # Top 20 highest-variance dims
+        raw_pairs = [(int(top_dims[i]), int(top_dims[j]))
+                     for i in range(len(top_dims)) for j in range(i+1, len(top_dims))]
+
+    raw_scores = []
+    for (i, j) in raw_pairs:
+        x_proj = W_E[:, i]
+        y_proj = W_E[:, j]
+        cx, cy = x_proj.mean(), y_proj.mean()
+        radii = np.sqrt((x_proj - cx)**2 + (y_proj - cy)**2)
+        mean_r = radii.mean()
+        if mean_r < 1e-10:
+            continue
+        circularity = 1.0 - (radii.std() / mean_r)
+        raw_scores.append({
+            "dim_x": i,
+            "dim_y": j,
+            "frequency": None,
+            "circularity_score": float(circularity),
+            "x_coords": x_proj,
+            "y_coords": y_proj,
+            "description": f"Raw dims ({i}, {j}): circularity={circularity:.3f}",
+            "method": "raw",
+        })
+
+    raw_scores.sort(key=lambda x: -x["circularity_score"])
+    results.extend(raw_scores[:top_k_pairs])
+
+    # Sort all results by circularity score
+    results.sort(key=lambda x: -x["circularity_score"])
+
+    return results
+
+
+def make_auto_circle_plot(model: ModularAdditionTransformer,
+                          pair_info: dict) -> go.Figure:
+    """
+    Create a circle plot from a pre-computed pair_info dict
+    (as returned by find_circular_dimension_pairs).
+    """
+    P = model.P
+    x_coords = pair_info["x_coords"]
+    y_coords = pair_info["y_coords"]
+
+    fig = go.Figure()
+
+    # Color by token ID to show ordering
+    fig.add_trace(go.Scatter(
+        x=x_coords,
+        y=y_coords,
+        mode="markers+text",
+        marker=dict(size=10, color=np.arange(P), colorscale="hsv", showscale=True,
+                    colorbar=dict(title="Token ID")),
+        text=[str(i) for i in range(P)],
+        textposition="top center",
+        textfont=dict(size=7),
+        hovertemplate=(
+            "Token: %{text}<br>"
+            "x: %{x:.4f}<br>"
+            "y: %{y:.4f}<br>"
+            "<extra></extra>"
+        ),
+        name="Tokens",
+    ))
+
+    # Fit circle
+    cx, cy = x_coords.mean(), y_coords.mean()
+    radii = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
+    avg_r = radii.mean()
+
+    theta = np.linspace(0, 2*np.pi, 200)
+    fig.add_trace(go.Scatter(
+        x=cx + avg_r * np.cos(theta),
+        y=cy + avg_r * np.sin(theta),
+        mode="lines",
+        line=dict(color="rgba(255,0,0,0.3)", width=2, dash="dash"),
+        name=f"Fitted circle (r={avg_r:.3f})",
+        hoverinfo="skip",
+    ))
+
+    # Draw lines connecting consecutive tokens to show the winding
+    for i in range(P):
+        j = (i + 1) % P
+        fig.add_trace(go.Scatter(
+            x=[x_coords[i], x_coords[j]],
+            y=[y_coords[i], y_coords[j]],
+            mode="lines",
+            line=dict(color="rgba(150,150,150,0.15)", width=0.5),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+
+    circularity = pair_info["circularity_score"]
+    freq_str = f" (freq k={pair_info['frequency']})" if pair_info.get("frequency") else ""
+
+    fig.update_layout(
+        title=f"{pair_info['description']}<br>Circularity: {circularity:.4f}{freq_str}",
+        xaxis_title=pair_info["dim_x"] if isinstance(pair_info["dim_x"], str) else f"Dim {pair_info['dim_x']}",
+        yaxis_title=pair_info["dim_y"] if isinstance(pair_info["dim_y"], str) else f"Dim {pair_info['dim_y']}",
+        xaxis=dict(scaleanchor="y", scaleratio=1),
+        height=600,
+        width=650,
+    )
+
+    return fig
+
+
+def make_all_circles_summary(model: ModularAdditionTransformer,
+                             key_frequencies: list[int] = None) -> go.Figure:
+    """
+    Create a summary figure showing ALL discovered circles in a grid.
+    This is the "one-click" view that replaces manual dimension hunting.
+    """
+    pairs = find_circular_dimension_pairs(model, key_frequencies, top_k_pairs=3)
+
+    n_plots = min(len(pairs), 8)
+    n_cols = min(4, n_plots)
+    n_rows = (n_plots + n_cols - 1) // n_cols
+
+    fig = make_subplots(
+        rows=n_rows, cols=n_cols,
+        subplot_titles=[p["description"][:50] for p in pairs[:n_plots]],
+        horizontal_spacing=0.08,
+        vertical_spacing=0.12,
+    )
+
+    P = model.P
+
+    for idx, pair in enumerate(pairs[:n_plots]):
+        row = idx // n_cols + 1
+        col = idx % n_cols + 1
+
+        x_coords = pair["x_coords"]
+        y_coords = pair["y_coords"]
+
+        fig.add_trace(go.Scatter(
+            x=x_coords, y=y_coords,
+            mode="markers",
+            marker=dict(size=4, color=np.arange(P), colorscale="hsv", showscale=False),
+            hovertemplate="Token %{text}<extra></extra>",
+            text=[str(i) for i in range(P)],
+            showlegend=False,
+        ), row=row, col=col)
+
+        # Fitted circle
+        cx, cy = x_coords.mean(), y_coords.mean()
+        radii = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
+        avg_r = radii.mean()
+        theta = np.linspace(0, 2*np.pi, 100)
+        fig.add_trace(go.Scatter(
+            x=cx + avg_r * np.cos(theta),
+            y=cy + avg_r * np.sin(theta),
+            mode="lines",
+            line=dict(color="rgba(255,0,0,0.3)", width=1, dash="dash"),
+            showlegend=False,
+            hoverinfo="skip",
+        ), row=row, col=col)
+
+    fig.update_layout(
+        height=300 * n_rows,
+        title_text="Auto-Discovered Circular Structures in Embedding Space",
+    )
+
+    return fig
+
 
 
 # =============================================================================
