@@ -39,6 +39,8 @@ import sys
 import os
 import shutil
 import subprocess
+import time
+from pathlib import Path
 
 # =============================================================================
 # Auto-restart under `uv run` if invoked directly with python3
@@ -1846,6 +1848,21 @@ def build_gui():
         state["test_accs"] = test_accs
         state["metrics_table"] = metrics_table
 
+        # ========== HIER EINFÜGEN ==========
+        config = {
+            "P": int(P),
+            "d_model": int(d_model),
+            "n_heads": int(n_heads),
+            "d_mlp": int(d_mlp),
+            "train_frac": float(train_frac),
+            "epochs": int(epochs),
+            "lr": float(lr),
+            "weight_decay": float(weight_decay),
+        }
+        run_id = save_run(model, train_losses, test_accs, metrics_table, config)
+        logs.append(f"Run saved with ID: {run_id}")
+        # ====================================
+
         # Create plot
         fig = make_training_plot(train_losses, test_accs)
 
@@ -2180,6 +2197,15 @@ def build_gui():
                     outputs=[saved_table, saved_plot],
                 )
 
+            with gr.TabItem("Saved Runs"):
+                gr.Markdown("### Load a Previous Training Run")
+                refresh_btn = gr.Button("Refresh Run List")
+                run_dropdown = gr.Dropdown(choices=[], label="Select a run")
+                load_run_btn = gr.Button("Load Selected Run", variant="primary")
+                loaded_info = gr.Markdown()
+                loaded_plot = gr.Plot()
+                loaded_table = gr.Dataframe()
+
             # ===== TAB 6: Interactive Inference =====
             with gr.TabItem("Run Inference"):
                 gr.Markdown("### Enter Numbers to Test the Neural Network")
@@ -2386,6 +2412,77 @@ def build_gui():
 
     return demo
 
+def save_run(model, train_losses, test_accs, metrics_table, config: dict):
+    """Save a complete training run: model weights + metrics + config."""
+    run_id = time.strftime("%Y%m%d_%H%M%S")
+    run_dir = Path(SAVE_DIR) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save model weights
+    torch.save(model.state_dict(), run_dir / "model.pt")
+
+    # Save config (hyperparameters needed to reconstruct the model)
+    with open(run_dir / "config.json", "w") as f:
+        json.dump(config, f, indent=2)
+
+    # Save metrics
+    df = pd.DataFrame(metrics_table)
+    df.to_csv(run_dir / "metrics.csv", index=False)
+
+    # Save loss/acc curves
+    with open(run_dir / "curves.json", "w") as f:
+        json.dump({"train_losses": train_losses, "test_accs": test_accs}, f)
+
+    return run_id
+
+def list_saved_runs() -> list[dict]:
+    """List all saved runs with their summary info."""
+    runs = []
+    save_path = Path(SAVE_DIR)
+    if not save_path.exists():
+        return runs
+
+    for run_dir in sorted(save_path.iterdir(), reverse=True):
+        if run_dir.is_dir() and (run_dir / "config.json").exists():
+            with open(run_dir / "config.json") as f:
+                config = json.load(f)
+            # Get final test accuracy from metrics
+            metrics_path = run_dir / "metrics.csv"
+            final_acc = "N/A"
+            if metrics_path.exists():
+                df = pd.read_csv(metrics_path)
+                if len(df) > 0:
+                    final_acc = f"{df['test_acc'].iloc[-1]:.4f}"
+            runs.append({
+                "run_id": run_dir.name,
+                "P": config.get("P"),
+                "epochs_trained": config.get("epochs"),
+                "final_test_acc": final_acc,
+            })
+    return runs
+
+
+def load_run(run_id: str):
+    """Load a saved run: reconstruct model and return metrics."""
+    run_dir = Path(SAVE_DIR) / run_id
+
+    with open(run_dir / "config.json") as f:
+        config = json.load(f)
+
+    # Reconstruct model architecture from config
+    model = ModularAdditionTransformer(
+        P=config["P"], d_model=config["d_model"],
+        n_heads=config["n_heads"], d_mlp=config["d_mlp"]
+    )
+    model.load_state_dict(torch.load(run_dir / "model.pt", map_location="cpu"))
+    model.eval()
+
+    with open(run_dir / "curves.json") as f:
+        curves = json.load(f)
+
+    metrics_df = pd.read_csv(run_dir / "metrics.csv")
+
+    return model, curves["train_losses"], curves["test_accs"], metrics_df, config
 
 # =============================================================================
 # Main Entry Point
