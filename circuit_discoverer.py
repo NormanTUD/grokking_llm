@@ -1,6 +1,8 @@
 import torch.nn as nn
 import numpy as np
+
 from modular_addition_transformer import ModularAdditionTransformer
+from discovered_circuit import DiscoveredCircuit
 
 class CircuitDiscoverer:
     """
