@@ -219,8 +219,6 @@ class CircuitLatexGenerator:
         lines.append(r"\begin{longtable}{|c|p{5cm}|p{5.5cm}|}")
         lines.append(r"\hline")
         lines.append(r"\textbf{Symbol} & \textbf{Name / Meaning} & \textbf{Shape / Value} \\ \hline")
-        lines.append(r"\endfirsthead")
-        lines.append(r"\hline \textbf{Symbol} & \textbf{Name / Meaning} & \textbf{Shape / Value} \\ \hline")
         lines.append(r"\endhead")
 
         # --- Scalars ---
