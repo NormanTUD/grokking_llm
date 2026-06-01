@@ -2188,6 +2188,48 @@ def build_gui():
                 loaded_plot = gr.Plot()
                 loaded_table = gr.Dataframe()
 
+                def refresh_runs():
+                    """Refresh the dropdown with available runs."""
+                    runs = list_saved_runs()
+                    choices = [r["run_id"] for r in runs]
+                    return gr.Dropdown(choices=choices, value=choices[0] if choices else None)
+
+                def load_selected_run(run_id):
+                    """Load a run and display its data."""
+                    if not run_id:
+                        return "No run selected.", go.Figure(), pd.DataFrame()
+
+                    model, train_losses, test_accs, metrics_df, config = load_run(run_id)
+                    state["model"] = model
+                    state["train_losses"] = train_losses
+                    state["test_accs"] = test_accs
+
+                    fig = make_training_plot(train_losses, test_accs)
+
+                    info_md = (
+                        f"**Run ID:** {run_id}\n\n"
+                        f"**Config:** P={config['P']}, d_model={config['d_model']}, "
+                        f"n_heads={config['n_heads']}, d_mlp={config['d_mlp']}\n\n"
+                        f"**Train frac:** {config['train_frac']}, **LR:** {config['lr']}, "
+                        f"**WD:** {config['weight_decay']}\n\n"
+                        f"**Final test acc:** {metrics_df['test_acc'].iloc[-1]:.4f}\n\n"
+                        f"✅ Model loaded into state — you can now run circuit discovery."
+                    )
+
+                    return info_md, fig, metrics_df
+
+                refresh_btn.click(
+                    fn=refresh_runs,
+                    inputs=[],
+                    outputs=[run_dropdown],
+                )
+
+                load_run_btn.click(
+                    fn=load_selected_run,
+                    inputs=[run_dropdown],
+                    outputs=[loaded_info, loaded_plot, loaded_table],
+                )
+
             # ===== TAB 6: Interactive Inference =====
             with gr.TabItem("Run Inference"):
                 gr.Markdown("### Enter Numbers to Test the Neural Network")
