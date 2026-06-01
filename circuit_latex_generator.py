@@ -1367,7 +1367,7 @@ class CircuitLatexGenerator:
         lines.append("")
 
         # Comparison
-        if isinstance(logit_correct, (int, float)) and total_wrong != 0:
+        if isinstance(total_logit, (int, float)) and total_wrong != 0:
             lines.append(
                 f"\\textbf{{Margin:}} $\\text{{Logit}}({self.c_star}) - \\text{{Logit}}({c_wrong}) "
                 f"= {logit_correct:.2f} - {total_wrong:.2f} = {logit_correct - total_wrong:.2f}$. "
