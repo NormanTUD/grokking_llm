@@ -2496,43 +2496,53 @@ def build_gui():
 
         progress(0.9, desc="Formatting for display...")
 
-        # Create a Markdown-friendly version with the key equations
-        # (Gradio supports LaTeX in Markdown via $...$ and $$...$$)
         P = state["model"].P
         freqs_str = ", ".join(str(k) for k in circuit.key_frequencies)
 
         display_md = f"""## Circuit Equations for $(a + b) \\bmod {P}$
 
 ### Key Frequencies
+
 $$\\mathcal{{K}} = \\{{{freqs_str}\\}}$$
 
 ### Step 1: Embedding
+
 $$\\mathbf{{x}}^{{(0)}}_a = \\underbrace{{W_E \\cdot \\mathbf{{e}}_a}}_{{\\text{{token embedding of }} a}} + \\underbrace{{\\mathbf{{p}}_0}}_{{\\text{{positional embedding (pos 0)}}}}$$
 
 $$\\approx \\sum_{{k \\in \\mathcal{{K}}}} \\left[ \\underbrace{{\\alpha_k \\cos\\!\\left(\\frac{{2\\pi k \\cdot a}}{{{P}}}\\right)}}_{{\\text{{cosine from }} W_E}} \\cdot \\mathbf{{u}}_k^{{(\\cos)}} + \\underbrace{{\\beta_k \\sin\\!\\left(\\frac{{2\\pi k \\cdot a}}{{{P}}}\\right)}}_{{\\text{{sine from }} W_E}} \\cdot \\mathbf{{u}}_k^{{(\\sin)}} \\right]$$
 
 ### Step 2: Attention (Move Info to Output Position)
+
 $$A^{{(j)}}_0 = \\underbrace{{\\sigma\\!\\left(\\text{{score}}^{{(j)}}_{{=\\to a}} - \\text{{score}}^{{(j)}}_{{=\\to b}}\\right)}}_{{\\text{{softmax over 2 elements = sigmoid of difference}}}}$$
 
 $$\\approx \\underbrace{{0.5}}_{{\\text{{uniform}}}} + \\underbrace{{\\gamma_j \\left(\\cos(\\omega_{{k_j}} a) - \\cos(\\omega_{{k_j}} b)\\right)}}_{{\\text{{periodic modulation from }} W_E^\\top W_K^{{\\top}} W_Q \\mathbf{{x}}_=}}$$
 
 ### Step 3: MLP (Trig Identities)
+
 $$\\underbrace{{\\mathbf{{u}}_k^\\top \\cdot \\text{{MLP}}(a,b)}}_{{\\text{{project onto direction in }} W_L}} \\approx \\overbrace{{\\underbrace{{\\cos(\\omega_k a)\\cos(\\omega_k b)}}_{{\\text{{from attn products}}}} - \\underbrace{{\\sin(\\omega_k a)\\sin(\\omega_k b)}}_{{\\text{{from attn products}}}}}}^{{= \\cos(\\omega_k(a+b)) \\text{{ (addition formula)}}}}$$
 
-### Step 4: Unembedding (Fourier → Logits)
+### Step 4: Unembedding (Fourier to Logits)
+
 $$\\text{{Logit}}(c \\mid a, b) \\approx \\sum_{{k \\in \\mathcal{{K}}}} \\underbrace{{\\alpha_k}}_{{\\text{{amplitude}}}} \\underbrace{{\\cos\\!\\left(\\frac{{2\\pi k(a+b-c)}}{{{P}}}\\right)}}_{{\\substack{{\\text{{peaks when }} c \\equiv a+b \\pmod{{{P}}}}} \\\\ \\text{{since }} \\cos(0) = 1}}$$
 
 ### Step 5: Prediction
+
 $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum_{{k \\in \\mathcal{{K}}}} \\alpha_k \\cos\\!\\left(\\frac{{2\\pi k(a+b-c)}}{{{P}}}\\right) = \\underbrace{{(a+b) \\bmod {P}}}_{{\\text{{constructive interference at correct answer}}}}$$
 
 ### Verification
-- **FVE (Fraction of Variance Explained):** {circuit.fve_logits:.4f}
-- **Exhaustive verification accuracy:** {circuit.verification_accuracy*100:.2f}%
-- **Neurons assigned to key frequencies:** {len(circuit.neuron_frequency_assignments)}/512
+
+| Metric | Value |
+|:-------|:------|
+| FVE (Fraction of Variance Explained) | {circuit.fve_logits:.4f} |
+| Exhaustive verification accuracy | {circuit.verification_accuracy*100:.2f}% |
+| Neurons assigned to key frequencies | {len(circuit.neuron_frequency_assignments)}/512 |
 
 ### Per-Frequency Neuron Counts
+
+| Frequency | Neurons | Angular Frequency |
+|:---------:|:-------:|:-----------------:|
 """
-        # Add per-frequency neuron counts
+        # Add per-frequency neuron counts as table rows
         freq_neuron_counts = {}
         for info in circuit.neuron_frequency_assignments.values():
             freq = info.get("frequency")
@@ -2540,7 +2550,7 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
 
         for k in circuit.key_frequencies:
             count = freq_neuron_counts.get(k, 0)
-            display_md += f"- $k = {k}$: {count} neurons, $\\omega_{{{k}}} = \\frac{{2\\pi \\cdot {k}}}{{{P}}}$\n"
+            display_md += f"| {k} | {count} | $\\frac{{2\\pi \\cdot {k}}}{{{P}}}$ |\n"
 
         progress(1.0, desc="Done!")
 
