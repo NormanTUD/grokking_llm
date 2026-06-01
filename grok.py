@@ -473,67 +473,69 @@ class CircuitLatexGenerator:
 
     def _worked_example(self) -> str:
         P = self.P
-        # Pick a concrete example
         a, b = 7, 13
         c_star = (a + b) % P
         lines = []
         lines.append(r"\subsection{Worked Example: $a=" + str(a) + r", b=" + str(b) + r"$}")
         lines.append("")
-        lines.append(r"\begin{align}")
+        lines.append(r"\noindent\textbf{Step 1: Embed.} "
+                     r"Compute Fourier components for each key frequency $k$:")
+        lines.append("")
 
-        # Step 1: Embedding
-        lines.append(
-            r"    &\textbf{Embed: } "
-            r"\underbrace{\omega_k = \frac{2\pi k}{" + str(P) + r"}}_{\text{angular freq}} "
-            r"\quad \Rightarrow \quad "
-        )
-        for i, k in enumerate(self.key_frequencies[:3]):  # Show first 3 for brevity
-            wk_a = f"\\frac{{2\\pi \\cdot {k} \\cdot {a}}}{{{P}}}"
-            wk_b = f"\\frac{{2\\pi \\cdot {k} \\cdot {b}}}{{{P}}}"
+        # Show embedding as a table-like structure
+        lines.append(r"\begin{gather*}")
+        for i, k in enumerate(self.key_frequencies[:3]):
             lines.append(
-                f"    \\cos\\!\\left({wk_a}\\right), \\;"
-                f"\\sin\\!\\left({wk_a}\\right), \\;"
-                f"\\cos\\!\\left({wk_b}\\right), \\;"
-                f"\\sin\\!\\left({wk_b}\\right)"
+                f"    k={k}:\\quad"
+                f" \\cos\\!\\left(\\tfrac{{2\\pi \\cdot {k} \\cdot {a}}}{{{P}}}\\right),\\;"
+                f" \\sin\\!\\left(\\tfrac{{2\\pi \\cdot {k} \\cdot {a}}}{{{P}}}\\right),\\;"
+                f" \\cos\\!\\left(\\tfrac{{2\\pi \\cdot {k} \\cdot {b}}}{{{P}}}\\right),\\;"
+                f" \\sin\\!\\left(\\tfrac{{2\\pi \\cdot {k} \\cdot {b}}}{{{P}}}\\right)"
             )
             if i < 2:
-                lines.append(r"    \notag \\")
-        lines.append(r"    \notag \\[6pt]")
+                lines.append(r"    \\")
+        lines.append(r"\end{gather*}")
+        lines.append("")
 
-        # Step 2: MLP trig identity
-        lines.append(
-            r"    &\textbf{MLP (trig identity): } \notag \\"
-        )
-        for i, k in enumerate(self.key_frequencies[:2]):  # Show first 2
+        # MLP trig identity
+        lines.append(r"\noindent\textbf{Step 2: MLP applies trig identity} "
+                     r"$\cos(\alpha)\cos(\beta) - \sin(\alpha)\sin(\beta) = \cos(\alpha+\beta)$:")
+        lines.append("")
+        lines.append(r"\begin{gather*}")
+        for i, k in enumerate(self.key_frequencies[:2]):
             lines.append(
-                f"    &\\quad \\underbrace{{\\cos\\!\\left(\\frac{{2\\pi \\cdot {k} \\cdot {a}}}{{{P}}}\\right)"
-                f"\\cos\\!\\left(\\frac{{2\\pi \\cdot {k} \\cdot {b}}}{{{P}}}\\right)"
-                f" - \\sin\\!\\left(\\frac{{2\\pi \\cdot {k} \\cdot {a}}}{{{P}}}\\right)"
-                f"\\sin\\!\\left(\\frac{{2\\pi \\cdot {k} \\cdot {b}}}{{{P}}}\\right)}}_"
-                f"{{= \\cos\\!\\left(\\frac{{2\\pi \\cdot {k} \\cdot ({a}+{b})}}{{{P}}}\\right)"
-                f" = \\cos\\!\\left(\\frac{{2\\pi \\cdot {k} \\cdot {a+b}}}{{{P}}}\\right)}}"
+                f"    k={k}:\\quad"
+                f" \\underbrace{{"
+                f"\\cos\\!\\left(\\tfrac{{2\\pi \\cdot {k} \\cdot {a}}}{{{P}}}\\right)"
+                f"\\cos\\!\\left(\\tfrac{{2\\pi \\cdot {k} \\cdot {b}}}{{{P}}}\\right)"
+                f" - "
+                f"\\sin\\!\\left(\\tfrac{{2\\pi \\cdot {k} \\cdot {a}}}{{{P}}}\\right)"
+                f"\\sin\\!\\left(\\tfrac{{2\\pi \\cdot {k} \\cdot {b}}}{{{P}}}\\right)"
+                f"}}_{{= \\cos\\!\\left(\\tfrac{{2\\pi \\cdot {k} \\cdot {a+b}}}{{{P}}}\\right)}}"
             )
             if i < 1:
-                lines.append(r"    \notag \\")
-        lines.append(r"    \notag \\[6pt]")
+                lines.append(r"    \\[6pt]")
+        lines.append(r"\end{gather*}")
+        lines.append("")
 
-        # Step 3: Final logit
+        # Final logit
+        lines.append(r"\noindent\textbf{Step 3: Logit for correct answer} "
+                     f"$c^* = ({a}+{b}) \\bmod {P} = {c_star}$:")
+        lines.append("")
+        lines.append(r"\begin{equation*}")
         lines.append(
-            r"    &\textbf{Logit for } c^* = " + str(c_star) + r": \notag \\"
+            r"    \Logit(" + str(c_star) + r") = \sum_{k \in \mathcal{K}} \alpha_k "
+            r"\underbrace{\cos\!\left(\omega_k \cdot "
+            r"\overbrace{(" + str(a) + "+" + str(b) + "-" + str(c_star) + r")}^{"
+            r"= 0 \bmod " + str(P) + r"}\right)}_{= \cos(0) = 1}"
+            r" = \sum_k \alpha_k \quad \text{(MAXIMUM)}"
         )
-        lines.append(
-            r"    &\quad \text{Logit}(" + str(c_star) + r") = \sum_{k \in \mathcal{K}} \alpha_k "
-            r"\underbrace{\cos\!\left(\omega_k \cdot \overbrace{(" + str(a) + "+" + str(b) +
-            "-" + str(c_star) + r")}^{= 0 \bmod " + str(P) + r"}\right)}_{= \cos(0) = 1} "
-            r"= \sum_k \alpha_k \quad \text{(MAXIMUM)}"
-        )
-
-        lines.append(r"\end{align}")
+        lines.append(r"\end{equation*}")
         lines.append("")
         lines.append(
-            r"For any $c \neq " + str(c_star) + r"$, the argument $\omega_k(a+b-c) \neq 0$, "
-            r"so the cosines at different frequencies $k$ point in different directions and "
-            r"\textbf{destructively interfere}, giving a smaller logit."
+            r"For any $c \neq " + str(c_star) + r"$, the cosines at different frequencies "
+            r"point in different directions and \textbf{destructively interfere}, "
+            r"giving a smaller logit."
         )
 
         return "\n".join(lines)
@@ -545,72 +547,81 @@ class CircuitLatexGenerator:
         lines.append(f"\\subsubsection{{Frequency $k = {k}$: "
                      f"$\\omega_{{{k}}} = \\frac{{2\\pi \\cdot {k}}}{{{P}}}$}}")
         lines.append("")
+        lines.append(r"\noindent\textbf{Embedding:}")
         lines.append(r"\begin{align}")
-
-        # Embedding contribution
         lines.append(
-            f"    &\\text{{Embed: }} "
-            f"\\underbrace{{W_E[a]}}_{{\\ text{{row }} a \\text{{ of embed matrix}}}} "
-            f"\\xrightarrow{{\\text{{Fourier}}}} "
-            f"\\underbrace{{\\cos\\!\\left(\\frac{{2\\pi \\cdot {k} \\cdot a}}{{{P}}}\\right)}}_"
-            f"{{\\text{{from DFT component }} k={k} \\text{{ of }} W_E}}, \\;"
-            f"\\underbrace{{\\sin\\!\\left(\\frac{{2\\pi \\cdot {k} \\cdot a}}{{{P}}}\\right)}}_"
-            f"{{\\text{{from DFT component }} k={k} \\text{{ of }} W_E}}"
-            r"    \notag \\"
+            f"    &\\underbrace{{W_E[a]}}_{{\\text{{row }} a \\text{{ of }} W_E}}"
+            f" \\xrightarrow{{\\text{{DFT}}}}"
+            f" \\underbrace{{\\cos\\!\\left(\\tfrac{{2\\pi \\cdot {k} \\cdot a}}{{{P}}}\\right)}}_"
+            f"{{\\text{{component }} k={k}}},\\;"
+            f"\\underbrace{{\\sin\\!\\left(\\tfrac{{2\\pi \\cdot {k} \\cdot a}}{{{P}}}\\right)}}_"
+            f"{{\\text{{component }} k={k}}}"
+            r"    \notag"
         )
+        lines.append(r"\end{align}")
+        lines.append("")
 
         # Attention contribution
+        lines.append(r"\noindent\textbf{Attention:}")
+        lines.append(r"\begin{align}")
         lines.append(
-            f"    &\\text{{Attn: }} "
-            f"\\underbrace{{A^{{(j)}}_0 \\approx 0.5 + \\gamma_j\\cos(\\omega_{{{k}}} a)}}_"
-            f"{{\\text{{head }} j \\text{{ tuned to freq }} {k}}} "
-            f"\\times "
+            f"    &\\underbrace{{A^{{(j)}}_0 \\approx 0.5 + \\gamma_j\\cos(\\omega_{{{k}}} a)}}_"
+            f"{{\\text{{head }} j \\text{{ tuned to freq }} {k}}}"
+            f" \\times "
             f"\\underbrace{{\\text{{OV}}^{{(j)}}(a) \\approx \\cos(\\omega_{{{k}}} a)}}_"
-            f"{{\\text{{OV circuit output at freq }} {k}}}"
+            f"{{\\text{{OV output at freq }} {k}}}"
             r"    \notag \\"
         )
         lines.append(
-            f"    &\\quad \\Rightarrow \\text{{degree-2: }} "
-            f"\\underbrace{{\\cos^2(\\omega_{{{k}}} a), \\; "
-            f"\\cos(\\omega_{{{k}}} a)\\cos(\\omega_{{{k}}} b), \\; \\ldots}}_"
-            f"{{\\text{{products created by attn weight }} \\times \\text{{ OV output}}}}"
-            r"    \notag \\"
+            f"    &\\quad \\Rightarrow\\;"
+            f"\\underbrace{{\\cos^2(\\omega_{{{k}}} a),\\;"
+            f"\\cos(\\omega_{{{k}}} a)\\cos(\\omega_{{{k}}} b),\\; \\ldots}}_"
+            f"{{\\text{{degree-2 products from attn}} \\times \\text{{OV}}}}"
+            r"    \notag"
         )
+        lines.append(r"\end{align}")
+        lines.append("")
 
         # MLP computation
+        lines.append(r"\noindent\textbf{MLP (trig identity):}")
+        lines.append(r"\begin{align}")
         lines.append(
-            f"    &\\text{{MLP: }} "
-            f"\\underbrace{{\\text{{neuron }} n \\in \\text{{cluster}}_{{{k}}}}}_"
-            f"{{\\text{{{self._count_neurons_for_freq(k)} neurons assigned to freq }} {k}}} "
-            f"\\xrightarrow{{\\text{{ReLU + sum}}}} "
+            f"    &\\underbrace{{\\text{{neurons }} n \\in \\text{{cluster}}_{{{k}}}}}_"
+            f"{{\\text{{{self._count_neurons_for_freq(k)} neurons at freq }} {k}}}"
+            f" \\xrightarrow{{\\ReLU}}"
             r"    \notag \\"
         )
         lines.append(
-            f"    &\\quad "
-            f"\\overbrace{{"
+            f"    &\\quad"
+            f" \\overbrace{{"
             f"\\underbrace{{\\cos(\\omega_{{{k}}} a)\\cos(\\omega_{{{k}}} b)}}_"
-            f"{{\\text{{from attn products}}}} "
-            f"- \\underbrace{{\\sin(\\omega_{{{k}}} a)\\sin(\\omega_{{{k}}} b)}}_"
-            f"{{\\text{{from attn products}}}}"
-            f"}}^{{= \\cos(\\omega_{{{k}}}(a+b)) \\text{{ (addition formula)}}}}"
-            r"    \notag \\"
+            f"{{\\text{{from attn}}}}"
+            f" - "
+            f"\\underbrace{{\\sin(\\omega_{{{k}}} a)\\sin(\\omega_{{{k}}} b)}}_"
+            f"{{\\text{{from attn}}}}"
+            f"}}^{{= \\cos(\\omega_{{{k}}}(a+b))}}"
+            r"    \notag"
         )
+        lines.append(r"\end{align}")
+        lines.append("")
 
         # Unembed readoff
+        lines.append(r"\noindent\textbf{Unembedding:}")
+        lines.append(r"\begin{align}")
         lines.append(
-            f"    &\\text{{Unembed: }} "
-            f"\\underbrace{{\\mathbf{{u}}_{{{k}}}^\\top \\cdot \\text{{MLP}}}}_"
-            f"{{\\text{{project onto direction in }} W_L}} "
-            f"\\approx \\alpha_{{{k}}} \\cos(\\omega_{{{k}}}(a+b))"
+            f"    &\\underbrace{{\\bu_{{{k}}}^\\top \\cdot \\MLP}}_"
+            f"{{\\text{{project in }} W_L}}"
+            f" \\approx \\alpha_{{{k}}} \\cos(\\omega_{{{k}}}(a+b))"
             r"    \notag \\"
         )
         lines.append(
-            f"    &\\quad \\xrightarrow{{\\times \\cos(\\omega_{{{k}}} c)}} "
-            f"\\underbrace{{\\alpha_{{{k}}} \\cos(\\omega_{{{k}}}(a+b-c))}}_"
-            f"{{\\text{{contribution of freq }} {k} \\text{{ to logit}}(c)}}"
+            f"    &\\quad \\xrightarrow{{\\times \\cos(\\omega_{{{k}}} c)}}"
+            f" \\underbrace{{\\alpha_{{{k}}} \\cos(\\omega_{{{k}}}(a+b-c))}}_"
+            f"{{\\text{{freq }} {k} \\text{{ contribution to logit}}(c)}}"
+            r"    \notag"
         )
-
         lines.append(r"\end{align}")
+
         return "\n".join(lines)
 
     def _count_neurons_for_freq(self, k: int) -> int:
@@ -2571,8 +2582,7 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
         preamble = r"""\documentclass[11pt,a4paper]{article}
 
 % === Fonts ===
-\usepackage{fourier}  % Utopia-based font with matching math
-\usepackage[T1]{fontenc}
+\usepackage{fourier}  % Utopia-based font with matching math (loads T1 fontenc internally)
 \usepackage[utf8]{inputenc}
 
 % === Math ===
@@ -2581,7 +2591,7 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
 \usepackage{mathtools}
 
 % === Layout ===
-\usepackage[margin=2.5cm]{geometry}
+\usepackage[margin=2cm]{geometry}
 \usepackage{parskip}
 
 % === Colors and boxes ===
@@ -2592,6 +2602,9 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
 \usepackage{hyperref}
 \hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
 
+% === Allow line breaks in equations ===
+\allowdisplaybreaks
+
 % === Custom commands ===
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\bx}{\mathbf{x}}
@@ -2599,10 +2612,11 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
 \newcommand{\bv}{\mathbf{v}}
 \newcommand{\bp}{\mathbf{p}}
 \newcommand{\be}{\mathbf{e}}
-\newcommand{\MLP}{\text{MLP}}
-\newcommand{\attn}{\text{attn}}
-\newcommand{\Logit}{\text{Logit}}
-\newcommand{\FVE}{\text{FVE}}
+\newcommand{\MLP}{\operatorname{MLP}}
+\newcommand{\attn}{\operatorname{Attn}}
+\newcommand{\Logit}{\operatorname{Logit}}
+\newcommand{\FVE}{\operatorname{FVE}}
+\newcommand{\ReLU}{\operatorname{ReLU}}
 \DeclareMathOperator*{\argmax}{arg\,max}
 
 \title{Fourier Multiplication Circuit\\[6pt]
@@ -2616,7 +2630,7 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
 \begin{tcolorbox}[colback=blue!5!white, colframe=blue!75!black, title=Circuit Summary]
   \textbf{Task:} $(a + b) \bmod """ + str(P) + r"""$ \hfill
   \textbf{FVE:} """ + f"{circuit.fve_logits:.4f}" + r""" \hfill
-  \textbf{Verification Accuracy:} """ + f"{circuit.verification_accuracy*100:.2f}" + r"""\%
+  \textbf{Formula Accuracy:} """ + f"{circuit.verification_accuracy*100:.2f}" + r"""\%
 
   \textbf{Key frequencies:} $\mathcal{K} = \{""" + freqs_str + r"""\}$
   \quad (""" + str(len(circuit.key_frequencies)) + r""" frequencies)
@@ -2637,17 +2651,17 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
 \end{tcolorbox}
 
 \begin{tcolorbox}[colback=orange!5!white, colframe=orange!75!black, title=Data Flow Pipeline]
-  \begin{equation*}
+  \begin{gather*}
     \underbrace{a, b}_{\text{inputs}}
-    \xrightarrow{\quad W_E \quad}
-    \underbrace{\cos(\omega_k t), \sin(\omega_k t)}_{\text{Fourier embedding}}
-    \xrightarrow{\quad \attn \quad}
-    \underbrace{\text{degree-2 products}}_{\substack{\text{attn weight} \times \\ \text{OV output}}}
-    \xrightarrow{\quad \MLP \quad}
-    \underbrace{\cos(\omega_k(a\!+\!b)), \sin(\omega_k(a\!+\!b))}_{\text{trig addition identities}}
-    \xrightarrow{\quad W_U \quad}
-    \underbrace{\cos(\omega_k(a\!+\!b\!-\!c))}_{\text{logits}}
-  \end{equation*}
+    \xrightarrow{\; W_E \;}
+    \underbrace{\cos(\omega_k t),\; \sin(\omega_k t)}_{\text{Fourier embedding}}
+    \xrightarrow{\; \attn \;}
+    \underbrace{\text{degree-2 products}}_{\substack{\text{attn wt.} \times \text{OV}}} \\[8pt]
+    \xrightarrow{\; \MLP \;}
+    \underbrace{\cos(\omega_k(a{+}b)),\; \sin(\omega_k(a{+}b))}_{\text{trig addition identities}}
+    \xrightarrow{\; W_U \;}
+    \underbrace{\cos(\omega_k(a{+}b{-}c))}_{\text{logits}}
+  \end{gather*}
 \end{tcolorbox}
 
 \tableofcontents
