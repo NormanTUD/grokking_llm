@@ -2214,7 +2214,7 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
         x=x_coords,
         y=y_coords,
         mode="markers+text",
-        marker=dict(size=10, color=np.arange(P), colorscale="HSL", showscale=True, 
+        marker=dict(size=10, color=np.arange(P), colorscale="hsv", showscale=True, 
                     colorbar=dict(title="Token ID")),
         text=[str(i) for i in range(P)],
         textposition="top center",
