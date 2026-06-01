@@ -2331,48 +2331,92 @@ def build_gui():
         return pd.DataFrame()
 
     def train_and_update(P, d_model, n_heads, d_mlp, train_frac, epochs, lr, weight_decay, progress=gr.Progress()):
-        """Train model with live progress updates, returning plot and table."""
+        """Train model with live plot updates using a generator."""
+        P, d_model, n_heads, d_mlp, epochs = int(P), int(d_model), int(n_heads), int(d_mlp), int(epochs)
+        train_frac, lr, weight_decay = float(train_frac), float(lr), float(weight_decay)
+
         logs = []
+        train_losses = []
+        test_accs = []
+        metrics_table = []
 
-        def progress_cb(msg):
-            logs.append(msg)
+        model = ModularAdditionTransformer(P=P, d_model=d_model, n_heads=n_heads, d_mlp=d_mlp)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
-        model, train_losses, test_accs, metrics_table = train_model(
-            P=int(P), d_model=int(d_model), n_heads=int(n_heads), d_mlp=int(d_mlp),
-            train_frac=float(train_frac), epochs=int(epochs), lr=float(lr),
-            weight_decay=float(weight_decay), progress_cb=progress_cb, progress=progress,
-        )
+        # Create dataset: all pairs (a, b) with target (a+b) mod P
+        all_a = torch.arange(P).repeat_interleave(P)
+        all_b = torch.arange(P).repeat(P)
+        all_targets = (all_a + all_b) % P
 
+        # Train/test split
+        n_total = P * P
+        n_train = int(n_total * train_frac)
+        perm = torch.randperm(n_total)
+        train_idx = perm[:n_train]
+        test_idx = perm[n_train:]
+
+        train_a, train_b, train_t = all_a[train_idx], all_b[train_idx], all_targets[train_idx]
+        test_a, test_b, test_t = all_a[test_idx], all_b[test_idx], all_targets[test_idx]
+
+        best_test_acc = 0.0
+
+        for epoch in range(epochs):
+            model.train()
+            logits = model(train_a, train_b)
+            loss = F.cross_entropy(logits, train_t)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            if epoch % 500 == 0 or epoch == epochs - 1:
+                model.eval()
+                with torch.no_grad():
+                    test_logits = model(test_a, test_b)
+                    test_preds = test_logits.argmax(dim=-1)
+                    test_acc = (test_preds == test_t).float().mean().item()
+                    train_preds = logits.argmax(dim=-1)
+                    train_acc = (train_preds == train_t).float().mean().item()
+
+                train_losses.append((epoch, loss.item()))
+                test_accs.append((epoch, test_acc))
+                best_test_acc = max(best_test_acc, test_acc)
+
+                metrics_table.append({
+                    "epoch": epoch,
+                    "train_loss": round(loss.item(), 6),
+                    "train_acc": round(train_acc, 4),
+                    "test_acc": round(test_acc, 4),
+                    "best_test_acc": round(best_test_acc, 4),
+                })
+
+                log_msg = f"Epoch {epoch}: loss={loss.item():.4f}, train_acc={train_acc:.3f}, test_acc={test_acc:.3f}"
+                logs.append(log_msg)
+
+                progress((epoch + 1) / epochs, desc=log_msg)
+
+                # Yield live updates
+                fig = make_training_plot(train_losses, test_accs)
+                df = pd.DataFrame(metrics_table)
+                yield fig, df, "\n".join(logs[-20:])
+
+                if test_acc > 0.99:
+                    logs.append(f"Grokked at epoch {epoch}!")
+                    break
+
+        # Save and update state
+        model.eval()
         state["model"] = model
         state["train_losses"] = train_losses
         state["test_accs"] = test_accs
         state["metrics_table"] = metrics_table
 
-        # ========== HIER EINFÜGEN ==========
-        config = {
-            "P": int(P),
-            "d_model": int(d_model),
-            "n_heads": int(n_heads),
-            "d_mlp": int(d_mlp),
-            "train_frac": float(train_frac),
-            "epochs": int(epochs),
-            "lr": float(lr),
-            "weight_decay": float(weight_decay),
-        }
-        run_id = save_run(model, train_losses, test_accs, metrics_table, config)
-        logs.append(f"Run saved with ID: {run_id}")
-        # ====================================
+        config = {"P": P, "d_model": d_model, "n_heads": n_heads, "d_mlp": d_mlp,
+                  "train_frac": train_frac, "epochs": epochs, "lr": lr, "weight_decay": weight_decay}
+        save_run(model, train_losses, test_accs, metrics_table, config)
 
-        # Create plot
         fig = make_training_plot(train_losses, test_accs)
-
-        # Create DataFrame for table display
         df = pd.DataFrame(metrics_table)
-
-        # Log summary
-        log_text = "\n".join(logs[-20:])  # Last 20 log lines
-
-        return fig, df, log_text
+        yield fig, df, "\n".join(logs[-20:])
 
     def generate_latex_equations(progress=gr.Progress()):
         """Generate full LaTeX equations for the discovered circuit."""
