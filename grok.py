@@ -42,6 +42,9 @@ import subprocess
 import time
 from pathlib import Path
 
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
 # =============================================================================
 # Auto-restart under `uv run` if invoked directly with python3
 # =============================================================================
@@ -2365,10 +2368,6 @@ def ablation_test(model: ModularAdditionTransformer, key_freqs: list[int]) -> di
 # =============================================================================
 # Visualization Helpers (Plotly)
 # =============================================================================
-
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
 
 def make_training_plot(train_losses: list, test_accs: list) -> go.Figure:
     """Create a live training progress plot with loss and test accuracy."""
