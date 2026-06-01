@@ -1370,7 +1370,7 @@ class CircuitLatexGenerator:
         if isinstance(total_logit, (int, float)) and total_wrong != 0:
             lines.append(
                 f"\\textbf{{Margin:}} $\\text{{Logit}}({self.c_star}) - \\text{{Logit}}({c_wrong}) "
-                f"= {logit_correct:.2f} - {total_wrong:.2f} = {logit_correct - total_wrong:.2f}$. "
+                f"= {total_logit:.2f} - {total_wrong:.2f} = {total_logit - total_wrong:.2f}$. "
                 f"This large positive margin ensures the softmax assigns overwhelming probability to $c^* = {self.c_star}$."
             )
 
@@ -1400,7 +1400,7 @@ class CircuitLatexGenerator:
                 f"    \\node[below, font=\\tiny] at ({i * 1.5 + 0.85},0) {{$c={c_val}$}};"
             )
 
-        lines.append(r"    \node[font=\scriptsize, green!70!black] at (1.2," + str(int(max(logit_correct if isinstance(logit_correct, (int, float)) else 10, 10) * 1.1)) + r") {$c^*$};")
+        lines.append(r"    \node[font=\scriptsize, green!70!black] at (1.2," + str(int(max(total_logit if isinstance(total_logit, (int, float)) else 10, 10) * 1.1)) + r") {$c^*$};")
         lines.append(r"\end{tikzpicture}")
         lines.append(r"\end{center}")
         lines.append(r"\captionof{figure}{Logit values for selected output classes. "
