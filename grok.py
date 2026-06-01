@@ -899,7 +899,7 @@ class ModularAdditionTransformer(nn.Module):
 # =============================================================================
 
 def train_model(P: int = 113, d_model: int = 128, n_heads: int = 4, d_mlp: int = 512,
-                train_frac: float = 0.3, epochs: int = 80000, lr: float = 1e-3,
+                train_frac: float = 0.3, epochs: int = 40000, lr: float = 1e-3,
                 weight_decay: float = 1.0, progress_cb=None, progress=None) -> tuple:
     """Train a model on modular addition until it groks."""
     model = ModularAdditionTransformer(P, d_model, n_heads, d_mlp)
@@ -3208,7 +3208,7 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
                         d_mlp_input = gr.Number(value=512, label="d_mlp", precision=0)
                     with gr.Column(scale=1):
                         train_frac_input = gr.Number(value=0.3, label="Train fraction")
-                        epochs_input = gr.Number(value=80000, label="Max epochs", precision=0)
+                        epochs_input = gr.Number(value=40000, label="Max epochs", precision=0)
                         lr_input = gr.Number(value=1e-3, label="Learning rate")
                         wd_input = gr.Number(value=1.0, label="Weight decay")
 
