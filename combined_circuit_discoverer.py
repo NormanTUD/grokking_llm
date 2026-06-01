@@ -1,3 +1,6 @@
+from modular_addition_transformer import ModularAdditionTransformer
+from discovered_circuit import DiscoveredCircuit
+
 class CombinedCircuitDiscoverer:
     """
     Combines Fourier analysis (Nanda et al. 2023) with ACDC (Conmy et al. 2023)
