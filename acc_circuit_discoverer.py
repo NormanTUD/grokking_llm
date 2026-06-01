@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 from computational_graph import ComputationalGraph
 from modular_addition_transformer import ModularAdditionTransformer
