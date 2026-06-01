@@ -225,108 +225,186 @@ class CircuitLatexGenerator:
 
         # --- Scalars ---
         lines.append(r"\multicolumn{3}{|c|}{\textit{Scalar Constants}} \\ \hline")
-        entries = [
-            (r"$P$", "Prime modulus. The model computes $(a+b) \\bmod P$.", f"${P}$"),
-            (r"$d_{{\\text{{model}}}}$", "Dimension of the residual stream (embedding size).", f"${d_model}$"),
-            (r"$d_{{\\text{{mlp}}}}$", "Number of neurons in the MLP hidden layer.", f"${d_mlp}$"),
-            (r"$d_{{\\text{{head}}}}$", "Dimension of each attention head's Q/K/V vectors. "
-             r"Equal to $d_{\text{model}} / n_{\text{heads}}$.", f"${d_head}$"),
-            (r"$n_{{\\text{{heads}}}}$", "Number of attention heads.", f"${n_heads}$"),
-            (r"$k$", "A frequency index. Ranges over $\\mathcal{K}$.", f"Integer in $\\{{1, \\ldots, {P//2}\\}}$"),
-            (r"$\\omega_k$", "Angular frequency for index $k$. Defined as $\\omega_k = \\frac{2\\pi k}{P}$.",
-             f"$\\frac{{2\\pi k}}{{{P}}}$ radians"),
-            (r"$\\mathcal{{K}}$", "Set of key frequencies discovered via Fourier analysis of $W_E$ and $W_L$.",
-             f"$\\{{{freqs_str}\\}}$"),
-        ]
-        for sym, desc, val in entries:
-            lines.append(f"  {sym} & {desc} & {val} \\\\ \\hline")
+
+        # Each entry is (symbol, description, value) — all as raw LaTeX strings
+        # We use .format() or concatenation instead of f-strings to avoid brace issues
+        lines.append(
+            r"  $P$ & Prime modulus. The model computes $(a+b) \bmod P$. & $"
+            + str(P) + r"$ \\ \hline"
+        )
+        lines.append(
+            r"  $d_{\text{model}}$ & Dimension of the residual stream (embedding size). & $"
+            + str(d_model) + r"$ \\ \hline"
+        )
+        lines.append(
+            r"  $d_{\text{mlp}}$ & Number of neurons in the MLP hidden layer. & $"
+            + str(d_mlp) + r"$ \\ \hline"
+        )
+        lines.append(
+            r"  $d_{\text{head}}$ & Dimension of each attention head's Q/K/V vectors. "
+            r"Equal to $d_{\text{model}} / n_{\text{heads}}$. & $"
+            + str(d_head) + r"$ \\ \hline"
+        )
+        lines.append(
+            r"  $n_{\text{heads}}$ & Number of attention heads. & $"
+            + str(n_heads) + r"$ \\ \hline"
+        )
+        lines.append(
+            r"  $k$ & A frequency index. Ranges over $\mathcal{K}$. & Integer in $\{1, \ldots, "
+            + str(P // 2) + r"\}$ \\ \hline"
+        )
+        lines.append(
+            r"  $\omega_k$ & Angular frequency for index $k$. Defined as "
+            r"$\omega_k = \frac{2\pi k}{P}$. & $\frac{2\pi k}{"
+            + str(P) + r"}$ radians \\ \hline"
+        )
+        lines.append(
+            r"  $\mathcal{K}$ & Set of key frequencies discovered via Fourier analysis "
+            r"of $W_E$ and $W_L$. & $\{"
+            + freqs_str + r"\}$ \\ \hline"
+        )
 
         # --- Tokens and positions ---
         lines.append(r"\multicolumn{3}{|c|}{\textit{Tokens and Positions}} \\ \hline")
-        entries = [
-            (r"$a$", "The first input token (an integer). Sits at position 0 in the sequence.", f"$a \\in \\{{0, \\ldots, {P-1}\\}}$"),
-            (r"$b$", "The second input token (an integer). Sits at position 1 in the sequence.", f"$b \\in \\{{0, \\ldots, {P-1}\\}}$"),
-            (r"$=$", "The equals-sign token. A special fixed token at position 2. "
-             r"The model reads its output from this position.", "Token index $= P = " + str(P) + "$"),
-            (r"$c$", "A candidate output class. The model produces a logit for each $c$.", f"$c \\in \\{{0, \\ldots, {P-1}\\}}$"),
-            (r"$c^*$", "The correct answer: $c^* = (a + b) \\bmod P$.", f"$(a+b) \\bmod {P}$"),
-            (r"$\\mathbf{{e}}_a$", "One-hot vector for token $a$. Has a 1 in position $a$ and 0 elsewhere. "
-             r"This is the raw input to the embedding matrix.", f"$\\in \\mathbb{{R}}^{{{P+1}}}$"),
-            (r"$\\mathbf{{e}}_b$", "One-hot vector for token $b$.", f"$\\in \\mathbb{{R}}^{{{P+1}}}$"),
-            (r"position 0", "The first slot in the 3-token input sequence ``$a\\ b\\ =$''. Token $a$ lives here.", "---"),
-            (r"position 1", "The second slot. Token $b$ lives here.", "---"),
-            (r"position 2", "The third slot. The ``$=$'' token lives here. "
-             r"All output logits are read from this position.", "---"),
-        ]
-        for sym, desc, val in entries:
-            lines.append(f"  {sym} & {desc} & {val} \\\\ \\hline")
+        lines.append(
+            r"  $a$ & The first input token (an integer). Sits at position 0 in the sequence. "
+            r"& $a \in \{0, \ldots, " + str(P - 1) + r"\}$ \\ \hline"
+        )
+        lines.append(
+            r"  $b$ & The second input token (an integer). Sits at position 1 in the sequence. "
+            r"& $b \in \{0, \ldots, " + str(P - 1) + r"\}$ \\ \hline"
+        )
+        lines.append(
+            r"  $=$ & The equals-sign token. A special fixed token at position 2. "
+            r"The model reads its output from this position. & Token index $= P = "
+            + str(P) + r"$ \\ \hline"
+        )
+        lines.append(
+            r"  $c$ & A candidate output class. The model produces a logit for each $c$. "
+            r"& $c \in \{0, \ldots, " + str(P - 1) + r"\}$ \\ \hline"
+        )
+        lines.append(
+            r"  $c^*$ & The correct answer: $c^* = (a + b) \bmod P$. & $(a+b) \bmod "
+            + str(P) + r"$ \\ \hline"
+        )
+        lines.append(
+            r"  $\mathbf{e}_a$ & One-hot vector for token $a$. Has a 1 in position $a$ and 0 elsewhere. "
+            r"This is the raw input to the embedding matrix. & $\in \mathbb{R}^{"
+            + str(P + 1) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $\mathbf{e}_b$ & One-hot vector for token $b$. & $\in \mathbb{R}^{"
+            + str(P + 1) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  position 0 & The first slot in the 3-token input sequence ``$a\ b\ =$''. "
+            r"Token $a$ lives here. & --- \\ \hline"
+        )
+        lines.append(
+            r"  position 1 & The second slot. Token $b$ lives here. & --- \\ \hline"
+        )
+        lines.append(
+            r"  position 2 & The third slot. The ``$=$'' token lives here. "
+            r"All output logits are read from this position. & --- \\ \hline"
+        )
 
         # --- Weight matrices ---
         lines.append(r"\multicolumn{3}{|c|}{\textit{Weight Matrices}} \\ \hline")
-        entries = [
-            (r"$W_E$", "Token embedding matrix. Maps one-hot token vectors to $d_{{\\text{{model}}}}$-dimensional vectors. "
-             r"Row $a$ of $W_E$ is the embedding of token $a$.",
-             f"$\\in \\mathbb{{R}}^{{{P+1} \\times {d_model}}}$"),
-            (r"$\\mathbf{{p}}_i$", "Positional embedding for position $i \\in \\{0, 1, 2\\}$. "
-             r"Added to the token embedding to form the initial residual stream.",
-             f"$\\in \\mathbb{{R}}^{{{d_model}}}$"),
-            (r"$W_Q^{{(j)}}$", "Query weight matrix for attention head $j$. "
-             r"Projects the residual stream at the query position into query space.",
-             f"$\\in \\mathbb{{R}}^{{{d_model} \\times {d_model}}}$"),
-            (r"$W_K^{{(j)}}$", "Key weight matrix for attention head $j$. "
-             r"Projects the residual stream at key positions into key space.",
-             f"$\\in \\mathbb{{R}}^{{{d_model} \\times {d_model}}}$"),
-            (r"$W_V^{{(j)}}$", "Value weight matrix for attention head $j$. "
-             r"Projects the residual stream at value positions into value space.",
-             f"$\\in \\mathbb{{R}}^{{{d_model} \\times {d_model}}}$"),
-            (r"$W_O^{{(j)}}$", "Output projection matrix for attention head $j$. "
-             r"Projects the attention output back to the residual stream.",
-             f"$\\in \\mathbb{{R}}^{{{d_model} \\times {d_model}}}$"),
-            (r"$W_{{\\text{{in}}}}$", "MLP input weight matrix. Projects from residual stream to MLP hidden layer.",
-             f"$\\in \\mathbb{{R}}^{{{d_mlp} \\times {d_model}}}$"),
-            (r"$b_{{\\text{{in}}}}$", "MLP input bias vector.",
-             f"$\\in \\mathbb{{R}}^{{{d_mlp}}}$"),
-            (r"$W_{{\\text{{out}}}}$", "MLP output weight matrix. Projects from MLP hidden layer back to residual stream.",
-             f"$\\in \\mathbb{{R}}^{{{d_model} \\times {d_mlp}}}$"),
-            (r"$W_U$", "Unembedding matrix. Maps final residual stream to output logits (one per class $c$).",
-             f"$\\in \\mathbb{{R}}^{{{P} \\times {d_model}}}$"),
-            (r"$W_L$", "Neuron-logit map. Defined as $W_L = W_{{\\text{{out}}}}^\\top \\cdot W_U^\\top$. "
-             r"Maps MLP neuron activations directly to output logits. "
-             r"This is the key matrix for Fourier analysis.",
-             f"$\\in \\mathbb{{R}}^{{{d_mlp} \\times {P}}}$"),
-        ]
-        for sym, desc, val in entries:
-            lines.append(f"  {sym} & {desc} & {val} \\\\ \\hline")
+        lines.append(
+            r"  $W_E$ & Token embedding matrix. Maps one-hot token vectors to "
+            r"$d_{\text{model}}$-dimensional vectors. Row $a$ of $W_E$ is the embedding of token $a$. "
+            r"& $\in \mathbb{R}^{" + str(P + 1) + r" \times " + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $\mathbf{p}_i$ & Positional embedding for position $i \in \{0, 1, 2\}$. "
+            r"Added to the token embedding to form the initial residual stream. "
+            r"& $\in \mathbb{R}^{" + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $W_Q^{(j)}$ & Query weight matrix for attention head $j$. "
+            r"Projects the residual stream at the query position into query space. "
+            r"& $\in \mathbb{R}^{" + str(d_model) + r" \times " + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $W_K^{(j)}$ & Key weight matrix for attention head $j$. "
+            r"Projects the residual stream at key positions into key space. "
+            r"& $\in \mathbb{R}^{" + str(d_model) + r" \times " + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $W_V^{(j)}$ & Value weight matrix for attention head $j$. "
+            r"Projects the residual stream at value positions into value space. "
+            r"& $\in \mathbb{R}^{" + str(d_model) + r" \times " + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $W_O^{(j)}$ & Output projection matrix for attention head $j$. "
+            r"Projects the attention output back to the residual stream. "
+            r"& $\in \mathbb{R}^{" + str(d_model) + r" \times " + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $W_{\text{in}}$ & MLP input weight matrix. Projects from residual stream to MLP hidden layer. "
+            r"& $\in \mathbb{R}^{" + str(d_mlp) + r" \times " + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $b_{\text{in}}$ & MLP input bias vector. "
+            r"& $\in \mathbb{R}^{" + str(d_mlp) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $W_{\text{out}}$ & MLP output weight matrix. Projects from MLP hidden layer back to residual stream. "
+            r"& $\in \mathbb{R}^{" + str(d_model) + r" \times " + str(d_mlp) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $W_U$ & Unembedding matrix. Maps final residual stream to output logits (one per class $c$). "
+            r"& $\in \mathbb{R}^{" + str(P) + r" \times " + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $W_L$ & Neuron-logit map. Defined as $W_L = W_{\text{out}}^\top \cdot W_U^\top$. "
+            r"Maps MLP neuron activations directly to output logits. "
+            r"This is the key matrix for Fourier analysis. "
+            r"& $\in \mathbb{R}^{" + str(d_mlp) + r" \times " + str(P) + r"}$ \\ \hline"
+        )
 
         # --- Intermediate activations ---
         lines.append(r"\multicolumn{3}{|c|}{\textit{Intermediate Activations}} \\ \hline")
-        entries = [
-            (r"$\\mathbf{{x}}^{{(0)}}_a$", "Initial residual stream at position 0 (where token $a$ sits). "
-             r"Equals $W_E \\cdot \\mathbf{e}_a + \\mathbf{p}_0$.",
-             f"$\\in \\mathbb{{R}}^{{{d_model}}}$"),
-            (r"$\\mathbf{{x}}^{{(0)}}_b$", "Initial residual stream at position 1 (where token $b$ sits). "
-             r"Equals $W_E \\cdot \\mathbf{e}_b + \\mathbf{p}_1$.",
-             f"$\\in \\mathbb{{R}}^{{{d_model}}}$"),
-            (r"$\\mathbf{{x}}^{{(0)}}_=$", "Initial residual stream at position 2 (the ``$=$'' token). "
-             r"This is constant (independent of $a, b$) since the token and position are fixed.",
-             f"$\\in \\mathbb{{R}}^{{{d_model}}}$"),
-            (r"$\\mathbf{{x}}^{{(1)}}$", "Residual stream at position 2 after the attention layer. "
-             r"Equals $\\mathbf{x}^{(0)}_= + \\sum_j \\text{attn\\_out}^{(j)}$.",
-             f"$\\in \\mathbb{{R}}^{{{d_model}}}$"),
-            (r"$A^{{(j)}}_0$", "Attention weight from head $j$ at position 2 (``$=$'') attending to position 0 (token $a$). "
-             r"A scalar between 0 and 1. Note: $A^{(j)}_1 = 1 - A^{(j)}_0$.",
-             "Scalar $\\in [0, 1]$"),
-            (r"$A^{{(j)}}_1$", "Attention weight from head $j$ at position 2 attending to position 1 (token $b$). "
-             r"Equals $1 - A^{(j)}_0$.",
-             "Scalar $\\in [0, 1]$"),
-            (r"$\\text{{MLP}}[n]$", "Activation of MLP neuron $n$ (after ReLU). "
-             r"Equals $\\max(0,\\; W_{\\text{in}}[n,:] \\cdot \\mathbf{x}^{(1)} + b_{\\text{in}}[n])$.",
-             f"Scalar $\\geq 0$; $n \\in \\{{0, \\ldots, {d_mlp - 1}\\}}$"),
-            (r"$\\text{{Logit}}(c)$", "Output logit for class $c$. The model predicts $\\hat{c} = \\arg\\max_c \\text{Logit}(c)$.",
-             "Scalar"),
-        ]
-        for sym, desc, val in entries:
-            lines.append(f"  {sym} & {desc} & {val} \\\\ \\hline")
+        lines.append(
+            r"  $\mathbf{x}^{(0)}_a$ & Initial residual stream at position 0 (where token $a$ sits). "
+            r"Equals $W_E \cdot \mathbf{e}_a + \mathbf{p}_0$. "
+            r"& $\in \mathbb{R}^{" + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $\mathbf{x}^{(0)}_b$ & Initial residual stream at position 1 (where token $b$ sits). "
+            r"Equals $W_E \cdot \mathbf{e}_b + \mathbf{p}_1$. "
+            r"& $\in \mathbb{R}^{" + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $\mathbf{x}^{(0)}_=$ & Initial residual stream at position 2 (the ``$=$'' token). "
+            r"This is constant (independent of $a, b$) since the token and position are fixed. "
+            r"& $\in \mathbb{R}^{" + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $\mathbf{x}^{(1)}$ & Residual stream at position 2 after the attention layer. "
+            r"Equals $\mathbf{x}^{(0)}_= + \sum_j \text{attn\_out}^{(j)}$. "
+            r"& $\in \mathbb{R}^{" + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $A^{(j)}_0$ & Attention weight from head $j$ at position 2 (``$=$'') attending to position 0 (token $a$). "
+            r"A scalar between 0 and 1. Note: $A^{(j)}_1 = 1 - A^{(j)}_0$. "
+            r"& Scalar $\in [0, 1]$ \\ \hline"
+        )
+        lines.append(
+            r"  $A^{(j)}_1$ & Attention weight from head $j$ at position 2 attending to position 1 (token $b$). "
+            r"Equals $1 - A^{(j)}_0$. "
+            r"& Scalar $\in [0, 1]$ \\ \hline"
+        )
+        lines.append(
+            r"  $\text{MLP}[n]$ & Activation of MLP neuron $n$ (after ReLU). "
+            r"Equals $\max(0,\; W_{\text{in}}[n,:] \cdot \mathbf{x}^{(1)} + b_{\text{in}}[n])$. "
+            r"& Scalar $\geq 0$; $n \in \{0, \ldots, " + str(d_mlp - 1) + r"\}$ \\ \hline"
+        )
+        lines.append(
+            r"  $\text{Logit}(c)$ & Output logit for class $c$. The model predicts "
+            r"$\hat{c} = \arg\max_c \text{Logit}(c)$. "
+            r"& Scalar \\ \hline"
+        )
 
         # --- Fourier-specific variables ---
         lines.append(r"\multicolumn{3}{|c|}{\textit{Fourier Analysis Variables}} \\ \hline")
@@ -334,60 +412,77 @@ class CircuitLatexGenerator:
         # Build alpha string
         alpha_strs = []
         for k in self.key_frequencies:
-            alpha_val = self._extracted.get(f"alpha_k{k}", "?")
+            alpha_val = self._extracted.get(f"alpha_k{k}", None)
             if isinstance(alpha_val, float):
-                alpha_strs.append(f"$\\alpha_{{{k}}} = {alpha_val:.2f}$")
+                alpha_strs.append(r"$\alpha_{" + str(k) + r"} = " + f"{alpha_val:.2f}" + r"$")
             else:
-                alpha_strs.append(f"$\\alpha_{{{k}}}$")
+                alpha_strs.append(r"$\alpha_{" + str(k) + r"}$")
         alpha_list_str = ", ".join(alpha_strs)
 
-        entries = [
-            (r"$\\alpha_k$", "Amplitude coefficient for frequency $k$ in the logit formula. "
-             r"Fitted via OLS: $\\text{Logit}(c) \\approx \\sum_k \\alpha_k \\cos(\\omega_k(a+b-c))$. "
-             r"Larger $\\alpha_k$ means frequency $k$ contributes more to the final prediction.",
-             alpha_list_str),
-            (r"$\\beta_k$", "Amplitude of the sine component in the embedding. "
-             r"Measures how strongly $W_E$ encodes $\\sin(\\omega_k \\cdot t)$ for token $t$. "
-             r"Analogous to $\\alpha_k$ but for the sine direction.",
-             "Fitted from $W_E$ Fourier decomposition"),
-            (r"$\\mathbf{{u}}_k$", "Direction in neuron space ($\\mathbb{R}^{" + str(d_mlp) + "}$) "
-             r"along which the MLP encodes $\\cos(\\omega_k(a+b))$. "
-             r"Extracted from the Fourier decomposition of $W_L$: the column of $W_L$ "
-             r"in the Fourier basis corresponding to $\\cos(\\omega_k c)$.",
-             f"$\\in \\mathbb{{R}}^{{{d_mlp}}}$"),
-            (r"$\\mathbf{{v}}_k$", "Direction in neuron space along which the MLP encodes $\\sin(\\omega_k(a+b))$. "
-             r"The column of $W_L$ in the Fourier basis corresponding to $\\sin(\\omega_k c)$.",
-             f"$\\in \\mathbb{{R}}^{{{d_mlp}}}$"),
-            (r"$\\mathbf{{u}}_k^{{(\\cos)}}$", "Direction in residual stream ($\\mathbb{R}^{" + str(d_model) + "}$) "
-             r"along which the embedding encodes the cosine component at frequency $k$. "
-             r"Extracted from the Fourier decomposition of $W_E$.",
-             f"$\\in \\mathbb{{R}}^{{{d_model}}}$"),
-            (r"$\\mathbf{{u}}_k^{{(\\sin)}}$", "Direction in residual stream along which the embedding "
-             r"encodes the sine component at frequency $k$.",
-             f"$\\in \\mathbb{{R}}^{{{d_model}}}$"),
-            (r"$\\gamma_j$", "Modulation amplitude of attention head $j$. "
-             r"Measures how much head $j$'s attention pattern deviates from uniform (0.5). "
-             r"Comes from the linear approximation to the sigmoid of the attention score difference.",
-             "Scalar (typically $|\\gamma_j| \\approx 0.25$)"),
-            (r"$C^{{(j)}}$", "Attention score lookup vector for head $j$. Defined as "
-             r"$C^{(j)} = W_E^\\top W_K^{(j)\\top} W_Q^{(j)} \\mathbf{x}^{(0)}_=$. "
-             r"Entry $C^{(j)}[a]$ gives the attention score contribution from token $a$.",
-             f"$\\in \\mathbb{{R}}^{{{P}}}$"),
-            (r"$0.5$ (uniform baseline)", "When softmax is applied over exactly 2 elements, "
-             r"the result is $\\sigma(\\Delta) = \\frac{1}{1 + e^{-\\Delta}}$. "
-             r"At $\\Delta = 0$ (no preference), this equals $0.5$. "
-             r"So 0.5 is the ``no information'' baseline for attention over 2 positions.",
-             "Constant"),
-        ]
-        for sym, desc, val in entries:
-            lines.append(f"  {sym} & {desc} & {val} \\\\ \\hline")
+        lines.append(
+            r"  $\alpha_k$ & Amplitude coefficient for frequency $k$ in the logit formula. "
+            r"Fitted via OLS: $\text{Logit}(c) \approx \sum_k \alpha_k \cos(\omega_k(a+b-c))$. "
+            r"Larger $\alpha_k$ means frequency $k$ contributes more to the final prediction. "
+            r"& " + alpha_list_str + r" \\ \hline"
+        )
+        lines.append(
+            r"  $\beta_k$ & Amplitude of the sine component in the embedding. "
+            r"Measures how strongly $W_E$ encodes $\sin(\omega_k \cdot t)$ for token $t$. "
+            r"Analogous to $\alpha_k$ but for the sine direction. "
+            r"& Fitted from $W_E$ Fourier decomposition \\ \hline"
+        )
+        lines.append(
+            r"  $\mathbf{u}_k$ & Direction in neuron space ($\mathbb{R}^{" + str(d_mlp) + r"}$) "
+            r"along which the MLP encodes $\cos(\omega_k(a+b))$. "
+            r"Extracted from the Fourier decomposition of $W_L$: the column of $W_L$ "
+            r"in the Fourier basis corresponding to $\cos(\omega_k c)$. "
+            r"& $\in \mathbb{R}^{" + str(d_mlp) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $\mathbf{v}_k$ & Direction in neuron space along which the MLP encodes "
+            r"$\sin(\omega_k(a+b))$. The column of $W_L$ in the Fourier basis corresponding "
+            r"to $\sin(\omega_k c)$. "
+            r"& $\in \mathbb{R}^{" + str(d_mlp) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $\mathbf{u}_k^{(\cos)}$ & Direction in residual stream ($\mathbb{R}^{" + str(d_model) + r"}$) "
+            r"along which the embedding encodes the cosine component at frequency $k$. "
+            r"Extracted from the Fourier decomposition of $W_E$. "
+            r"& $\in \mathbb{R}^{" + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $\mathbf{u}_k^{(\sin)}$ & Direction in residual stream along which the embedding "
+            r"encodes the sine component at frequency $k$. "
+            r"& $\in \mathbb{R}^{" + str(d_model) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $\gamma_j$ & Modulation amplitude of attention head $j$. "
+            r"Measures how much head $j$'s attention pattern deviates from uniform (0.5). "
+            r"Comes from the linear approximation to the sigmoid of the attention score difference. "
+            r"& Scalar (typically $|\gamma_j| \approx 0.25$) \\ \hline"
+        )
+        lines.append(
+            r"  $C^{(j)}$ & Attention score lookup vector for head $j$. Defined as "
+            r"$C^{(j)} = W_E^\top W_K^{(j)\top} W_Q^{(j)} \mathbf{x}^{(0)}_=$. "
+            r"Entry $C^{(j)}[a]$ gives the attention score contribution from token $a$. "
+            r"& $\in \mathbb{R}^{" + str(P) + r"}$ \\ \hline"
+        )
+        lines.append(
+            r"  $0.5$ (baseline) & When softmax is applied over exactly 2 elements, "
+            r"the result is $\sigma(\Delta) = \frac{1}{1 + e^{-\Delta}}$. "
+            r"At $\Delta = 0$ (no preference), this equals $0.5$. "
+            r"So 0.5 is the ``no information'' baseline for attention over 2 positions. "
+            r"& Constant \\ \hline"
+        )
 
         lines.append(r"\end{longtable}")
         lines.append("")
-        lines.append(r"\textbf{Note on the ``$=$'' token:} The input to the model is the 3-token sequence "
-                     r"``$a\;\; b\;\; =$''. The ``$=$'' is a literal token (with its own embedding) that serves as "
-                     r"the query position from which the model reads its output. It is \emph{not} the mathematical "
-                     r"equals sign. Its embedding $\mathbf{x}^{(0)}_=$ is constant across all inputs.")
+        lines.append(
+            r"\textbf{Note on the ``$=$'' token:} The input to the model is the 3-token sequence "
+            r"``$a\;\; b\;\; =$''. The ``$=$'' is a literal token (with its own embedding) that serves as "
+            r"the query position from which the model reads its output. It is \emph{not} the mathematical "
+            r"equals sign. Its embedding $\mathbf{x}^{(0)}_=$ is constant across all inputs."
+        )
 
         return "\n".join(lines)
 
