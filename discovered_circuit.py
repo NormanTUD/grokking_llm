@@ -1,3 +1,6 @@
+from dataclasses import dataclass, field
+import numpy as np
+
 @dataclass
 class DiscoveredCircuit:
     """Stores the results of Fourier-based circuit discovery."""
