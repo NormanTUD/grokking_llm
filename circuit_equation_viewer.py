@@ -328,9 +328,7 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
 
     # ─── HEADER ───
     header_latex = (
-        rf"\text{{Circuit Equations for }}({a} + {b}) \bmod {P} = {correct}"
-        rf"\quad \text{{Predicted: }}{predicted}"
-        rf"\quad {'\\color{{green}}\\checkmark' if is_correct else '\\color{{red}}\\times'}"
+        ""
     )
 
     # ─── ARCHITECTURE ───
