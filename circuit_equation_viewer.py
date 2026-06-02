@@ -13,7 +13,8 @@ import torch.nn.functional as F
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from typing import Optional
-
+import json
+import os
 
 # =============================================================================
 # Core: Extract only the RELEVANT weights from the model
@@ -578,30 +579,72 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
 
 def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) -> str:
     """
-    Build final HTML with Temml CDN rendering all LaTeX equations.
-    Uses MutationObserver + retry to handle Gradio's dynamic DOM updates.
+    Build final HTML with equations rendered to MathML server-side via temml CLI,
+    with fallback to client-side rendering if Node/temml not available.
     """
+    import subprocess
+    import shutil
+    import random
+
+    container_id = f"circuit-equations-{random.randint(10000, 99999)}"
+
+    def render_latex_to_mathml(tex: str) -> str:
+        """
+        Try to render LaTeX to MathML server-side using temml via Node.js.
+        Falls back to client-side rendering span if not available.
+        """
+        # Try server-side rendering via node + temml
+        node_path = shutil.which("node")
+        if node_path:
+            try:
+                # One-liner node script that renders via temml
+                js_code = f"""
+                try {{
+                    const temml = require('temml');
+                    const result = temml.renderToString({json.dumps(tex)}, {{
+                        displayMode: true,
+                        throwOnError: false,
+                        trust: true
+                    }});
+                    process.stdout.write(result);
+                }} catch(e) {{
+                    // temml not installed as node module, output empty
+                    process.stdout.write('');
+                }}
+                """
+                result = subprocess.run(
+                    [node_path, "-e", js_code],
+                    capture_output=True, text=True, timeout=5,
+                    cwd=os.path.dirname(os.path.abspath(__file__))
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+
+        # Fallback: return a span for client-side rendering
+        escaped = tex.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+        return f'<span class="eq-math" data-tex="{escaped}"></span>'
+
     def escape_for_html(s: str) -> str:
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+    # Check if server-side rendering works (test with a simple equation)
+    test_render = render_latex_to_mathml(r"x^2")
+    server_side_works = "<math" in test_render
 
     equation_blocks = []
 
     # Header
-    equation_blocks.append(f'''
-        <div class="eq-header">
-            <span class="eq-math" data-tex="{escape_for_html(header_latex)}"></span>
-        </div>
-    ''')
+    header_rendered = render_latex_to_mathml(header_latex)
+    equation_blocks.append(f'<div class="eq-header">{header_rendered}</div>')
 
     # Sections
     for section_title, equations in sections:
         eq_html_items = []
         for eq in equations:
-            eq_html_items.append(
-                f'<div class="eq-line">'
-                f'<span class="eq-math" data-tex="{escape_for_html(eq)}"></span>'
-                f'</div>'
-            )
+            rendered = render_latex_to_mathml(eq)
+            eq_html_items.append(f'<div class="eq-line">{rendered}</div>')
 
         equation_blocks.append(f'''
             <div class="eq-section">
@@ -610,21 +653,105 @@ def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) 
             </div>
         ''')
 
-    import random
-    container_id = f"circuit-equations-{random.randint(10000, 99999)}"
+    # Build the client-side fallback script (only needed if server-side failed)
+    client_script = ""
+    if not server_side_works:
+        client_script = f'''
+        <script>
+            (function() {{
+                var CONTAINER_ID = '{container_id}';
+                var MAX_RETRIES = 30;
+                var RETRY_INTERVAL = 200;
+                var retryCount = 0;
+
+                function renderAllMath() {{
+                    if (typeof temml === 'undefined') return false;
+                    var container = document.getElementById(CONTAINER_ID);
+                    if (!container) return false;
+
+                    var mathSpans = container.querySelectorAll('.eq-math[data-tex]');
+                    if (mathSpans.length === 0) return true;
+
+                    var allRendered = true;
+                    mathSpans.forEach(function(span) {{
+                        if (span.querySelector('math')) return;
+                        var tex = span.getAttribute('data-tex');
+                        if (!tex) return;
+                        try {{
+                            temml.render(tex, span, {{
+                                displayMode: true,
+                                throwOnError: false,
+                                trust: true,
+                                strict: false
+                            }});
+                        }} catch(e) {{
+                            span.innerHTML = '<code style="color:#c00;font-size:0.8em">' +
+                                tex.substring(0, 120) + '</code>';
+                            allRendered = false;
+                        }}
+                    }});
+                    return allRendered;
+                }}
+
+                function tryRender() {{
+                    if (renderAllMath()) return;
+                    retryCount++;
+                    if (retryCount < MAX_RETRIES) {{
+                        setTimeout(tryRender, RETRY_INTERVAL);
+                    }}
+                }}
+
+                function ensureTemml() {{
+                    if (typeof temml !== 'undefined') {{
+                        tryRender();
+                        return;
+                    }}
+                    var existing = document.querySelector('script[src*="temml"]');
+                    if (existing) {{
+                        existing.addEventListener('load', tryRender);
+                        setTimeout(tryRender, 500);
+                        return;
+                    }}
+                    var link = document.createElement('link');
+                    link.rel = 'stylesheet';
+                    link.href = 'https://cdn.jsdelivr.net/npm/temml@0.10.29/dist/Temml-Local.css';
+                    document.head.appendChild(link);
+
+                    var script = document.createElement('script');
+                    script.src = 'https://cdn.jsdelivr.net/npm/temml@0.10.29/dist/temml.min.js';
+                    script.onload = tryRender;
+                    document.head.appendChild(script);
+                }}
+
+                // Start immediately
+                ensureTemml();
+
+                // Also observe for Gradio DOM swaps
+                var observer = new MutationObserver(function() {{
+                    retryCount = 0;
+                    setTimeout(tryRender, 100);
+                }});
+                var target = document.getElementById(CONTAINER_ID);
+                if (target && target.parentNode) {{
+                    observer.observe(target.parentNode, {{ childList: true, subtree: false }});
+                }}
+            }})();
+        </script>
+        '''
 
     html = f'''
     <div id="{container_id}">
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/temml@0.10.29/dist/Temml-Local.css">
+        {"" if server_side_works else '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/temml@0.10.29/dist/Temml-Local.css">'}
         <style>
             #{container_id} {{
-                font-family: 'Computer Modern', 'Latin Modern', Georgia, serif;
+                font-family: 'Latin Modern', 'Computer Modern', Georgia, serif;
                 max-width: 100%;
                 padding: 1.2em;
                 background: #fafbfc;
                 border-radius: 10px;
                 border: 1px solid #d0d7de;
-                line-height: 1.6;
+                line-height: 2.0;
+                color: #1a1a1a;
             }}
             #{container_id} .eq-header {{
                 text-align: center;
@@ -638,185 +765,51 @@ def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) 
             #{container_id} .eq-section {{
                 margin-bottom: 1.5em;
                 padding: 1em 1.2em;
-                background: white;
+                background: #ffffff;
                 border-radius: 8px;
                 border-left: 4px solid #1976d2;
-                box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+                box-shadow: 0 1px 3px rgba(0,0,0,0.08);
             }}
             #{container_id} .eq-section-title {{
                 color: #1565c0;
-                font-size: 1.05em;
-                font-weight: 600;
-                margin: 0 0 0.6em 0;
+                font-size: 1.1em;
+                font-weight: 700;
+                margin: 0 0 0.7em 0;
                 padding-bottom: 0.4em;
-                border-bottom: 1px solid #e3f2fd;
+                border-bottom: 2px solid #e3f2fd;
             }}
             #{container_id} .eq-line {{
-                margin: 0.5em 0;
-                padding: 0.4em 0.8em;
+                margin: 0.6em 0;
+                padding: 0.5em 0.8em;
                 overflow-x: auto;
                 border-radius: 4px;
-                transition: background 0.15s;
+                min-height: 1.8em;
+                background: #fafafa;
+                border: 1px solid #f0f0f0;
             }}
             #{container_id} .eq-line:hover {{
-                background: #f5f7fa;
+                background: #f0f4ff;
+                border-color: #d0d8e8;
+            }}
+            #{container_id} math {{
+                font-size: 1.1em;
+                color: #1a1a1a;
             }}
             #{container_id} .eq-math {{
                 display: block;
                 text-align: left;
+                min-height: 1.5em;
             }}
-            #{container_id} .eq-error {{
-                color: #d32f2f;
-                font-family: monospace;
-                font-size: 0.85em;
-                padding: 0.3em;
-                background: #ffebee;
+            #{container_id} code {{
+                background: #fff3f3;
+                padding: 2px 4px;
                 border-radius: 3px;
             }}
         </style>
 
         {"".join(equation_blocks)}
 
-        <script>
-            (function() {{
-                var CONTAINER_ID = '{container_id}';
-                var MAX_RETRIES = 20;
-                var RETRY_INTERVAL = 150; // ms
-
-                function renderAllMath() {{
-                    var container = document.getElementById(CONTAINER_ID);
-                    if (!container) return false;
-                    if (typeof temml === 'undefined') return false;
-
-                    var mathSpans = container.querySelectorAll('.eq-math[data-tex]');
-                    var rendered = 0;
-                    mathSpans.forEach(function(span) {{
-                        // Skip already-rendered spans
-                        if (span.querySelector('math') || span.querySelector('.temml-error')) return;
-
-                        var tex = span.getAttribute('data-tex');
-                        if (!tex) return;
-
-                        try {{
-                            temml.render(tex, span, {{
-                                displayMode: true,
-                                throwOnError: false,
-                                trust: true,
-                                strict: false
-                            }});
-                            rendered++;
-                        }} catch(e) {{
-                            span.innerHTML = '<span class="eq-error">Error: ' + e.message + '<br>' + tex.substring(0, 80) + '...</span>';
-                            console.warn('Temml render error:', e.message, 'for:', tex.substring(0, 100));
-                        }}
-                    }});
-                    return rendered > 0 || mathSpans.length === 0;
-                }}
-
-                function loadTemmlAndRender() {{
-                    // Check if temml is already available
-                    if (typeof temml !== 'undefined') {{
-                        renderAllMath();
-                        return;
-                    }}
-
-                    // Check if script is already being loaded
-                    var existingScript = document.querySelector('script[src*="temml"]');
-                    if (existingScript) {{
-                        // Wait for it to load
-                        existingScript.addEventListener('load', function() {{
-                            renderAllMath();
-                        }});
-                        // Also retry in case event already fired
-                        retryRender(0);
-                        return;
-                    }}
-
-                    // Load temml
-                    var script = document.createElement('script');
-                    script.src = 'https://cdn.jsdelivr.net/npm/temml@0.10.29/dist/temml.min.js';
-                    script.onload = function() {{
-                        renderAllMath();
-                    }};
-                    script.onerror = function() {{
-                        console.error('Failed to load Temml from CDN');
-                        // Show raw LaTeX as fallback
-                        var container = document.getElementById(CONTAINER_ID);
-                        if (container) {{
-                            container.querySelectorAll('.eq-math[data-tex]').forEach(function(span) {{
-                                if (!span.querySelector('math')) {{
-                                    span.textContent = span.getAttribute('data-tex');
-                                    span.style.fontFamily = 'monospace';
-                                    span.style.fontSize = '0.85em';
-                                }}
-                            }});
-                        }}
-                    }};
-                    document.head.appendChild(script);
-                }}
-
-                function retryRender(attempt) {{
-                    if (attempt >= MAX_RETRIES) return;
-
-                    setTimeout(function() {{
-                        if (typeof temml !== 'undefined') {{
-                            var success = renderAllMath();
-                            if (!success) {{
-                                retryRender(attempt + 1);
-                            }}
-                        }} else {{
-                            retryRender(attempt + 1);
-                        }}
-                    }}, RETRY_INTERVAL);
-                }}
-
-                // Strategy:
-                // 1. Try to render immediately
-                // 2. If temml not loaded, load it
-                // 3. Retry with increasing delays
-                // 4. Use MutationObserver to catch Gradio DOM swaps
-
-                loadTemmlAndRender();
-                retryRender(0);
-
-                // MutationObserver: re-render if Gradio swaps the DOM
-                var observer = new MutationObserver(function(mutations) {{
-                    var container = document.getElementById(CONTAINER_ID);
-                    if (!container) return;
-
-                    var needsRender = false;
-                    for (var i = 0; i < mutations.length; i++) {{
-                        if (mutations[i].addedNodes.length > 0) {{
-                            needsRender = true;
-                            break;
-                        }}
-                    }}
-
-                    if (needsRender && typeof temml !== 'undefined') {{
-                        renderAllMath();
-                    }}
-                }});
-
-                // Observe the container's parent for changes
-                var container = document.getElementById(CONTAINER_ID);
-                if (container && container.parentNode) {{
-                    observer.observe(container.parentNode, {{
-                        childList: true,
-                        subtree: true
-                    }});
-                }}
-
-                // Final safety net: try again after page is fully loaded
-                if (document.readyState === 'loading') {{
-                    document.addEventListener('DOMContentLoaded', function() {{
-                        loadTemmlAndRender();
-                    }});
-                }}
-                window.addEventListener('load', function() {{
-                    setTimeout(renderAllMath, 500);
-                }});
-            }})();
-        </script>
+        {client_script}
     </div>
     '''
     return html
