@@ -151,10 +151,8 @@ from modular_addition_transformer import ModularAdditionTransformer
 # Zyklische Colorscale: Blau → Grün → Blau (betont Zyklizität)
 CYCLIC_BLUE_GREEN = [
     [0.0,  "rgb(0, 50, 200)"],     # Blau (Start)
-    [0.25, "rgb(0, 150, 150)"],    # Übergang Blau→Grün
-    [0.5,  "rgb(0, 200, 80)"],     # Grün (Mitte)
-    [0.75, "rgb(0, 150, 150)"],    # Übergang Grün→Blau
-    [1.0,  "rgb(0, 50, 200)"],     # Blau (Ende = Start → zyklisch!)
+    [0.5, "rgb(0, 150, 150)"],    # Übergang Blau→Grün
+    [1.0,  "rgb(0, 200, 80)"],     # Grün (Mitte)
 ]
 
 
