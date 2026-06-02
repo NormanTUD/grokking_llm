@@ -1363,7 +1363,7 @@ def build_gui():
         return pd.DataFrame()
 
     def train_and_update(P, d_model, n_heads, d_mlp, train_frac, epochs, lr, weight_decay, progress=gr.Progress()):
-        """Train model with live plot updates using a generator."""
+        """Train model with live plot updates. Does NOT auto-save."""
         P, d_model, n_heads, d_mlp, epochs = int(P), int(d_model), int(n_heads), int(d_mlp), int(epochs)
         train_frac, lr, weight_decay = float(train_frac), float(lr), float(weight_decay)
 
@@ -1375,7 +1375,7 @@ def build_gui():
         model = ModularAdditionTransformer(P=P, d_model=d_model, n_heads=n_heads, d_mlp=d_mlp)
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
-        # Create dataset: all pairs (a, b) with target (a+b) mod P
+        # Create dataset
         all_a = torch.arange(P).repeat_interleave(P)
         all_b = torch.arange(P).repeat(P)
         all_targets = (all_a + all_b) % P
@@ -1423,28 +1423,35 @@ def build_gui():
 
                 log_msg = f"Epoch {epoch}: loss={loss.item():.4f}, train_acc={train_acc:.3f}, test_acc={test_acc:.3f}"
                 logs.append(log_msg)
-
                 progress((epoch + 1) / epochs, desc=log_msg)
 
-                # Yield live updates
                 fig = make_training_plot(train_losses, test_accs)
                 df = pd.DataFrame(metrics_table)
                 yield fig, df, "\n".join(logs[-20:])
 
                 if test_acc > 0.99:
-                    logs.append(f"Grokked at epoch {epoch}!")
+                    logs.append(f"🎉 GROKKED at epoch {epoch}! (test_acc={test_acc:.4f})")
                     break
 
-        # Save and update state
+        # Store in state for manual saving later (NO auto-save)
         model.eval()
         state["model"] = model
         state["train_losses"] = train_losses
         state["test_accs"] = test_accs
         state["metrics_table"] = metrics_table
+        state["train_idx"] = train_idx
+        state["test_idx"] = test_idx
+        state["optimizer_state"] = optimizer.state_dict()
+        state["config"] = {
+            "P": P, "d_model": d_model, "n_heads": n_heads, "d_mlp": d_mlp,
+            "train_frac": train_frac, "epochs": epochs, "lr": lr, "weight_decay": weight_decay,
+        }
 
-        config = {"P": P, "d_model": d_model, "n_heads": n_heads, "d_mlp": d_mlp,
-                  "train_frac": train_frac, "epochs": epochs, "lr": lr, "weight_decay": weight_decay}
-        save_run(model, train_losses, test_accs, metrics_table, config)
+        # Final yield
+        grokked = is_grokked(metrics_table)
+        status = "GROKKED ✅" if grokked else "NOT GROKKED ❌"
+        logs.append(f"\nTraining complete. Status: {status}")
+        logs.append(f"Use the 'Save Run' button to save this model.")
 
         fig = make_training_plot(train_losses, test_accs)
         df = pd.DataFrame(metrics_table)
@@ -2057,56 +2064,139 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
                     outputs=[combined_summary_md, combined_fourier_plot, combined_acdc_plot, combined_consistency_md, combined_log],
                 )
 
-            with gr.TabItem("Saved Runs"):
-                gr.Markdown("### Load a Previous Training Run")
-                refresh_btn = gr.Button("Refresh Run List")
-                run_dropdown = gr.Dropdown(choices=[], label="Select a run")
-                load_run_btn = gr.Button("Load Selected Run", variant="primary")
+            # ===== TAB: Saved Runs =====
+            with gr.TabItem("💾 Saved Runs"):
+                gr.Markdown("### Save & Load Training Runs")
+                gr.Markdown(
+                    "Runs are **not** auto-saved. After training, click **Save Current Run** to persist "
+                    "the model, optimizer state, train/test split, and all metrics. "
+                    "Grokked models (≥99% test acc) are auto-detected and named accordingly.\n\n"
+                    "**Naming:** `grokked_mod_113_1`, `grokked_mod_113_2`, `ungrokked_mod_11_1`, etc."
+                )
+
+                gr.Markdown("---")
+                gr.Markdown("#### Save Current Run")
+                with gr.Row():
+                    custom_name_input = gr.Textbox(
+                        label="Custom name (leave blank for auto-naming)",
+                        placeholder="e.g. grokked_mod_113_lowlr",
+                        value="",
+                    )
+                    save_btn = gr.Button("💾 Save Current Run", variant="primary", size="lg")
+                save_status = gr.Markdown()
+
+                def do_save(custom_name):
+                    if state["model"] is None:
+                        return "⚠️ **No model in memory!** Train a model first."
+
+                    name = custom_name.strip() if custom_name.strip() else None
+                    run_id = save_run(
+                        model=state["model"],
+                        train_losses=state["train_losses"],
+                        test_accs=state["test_accs"],
+                        metrics_table=state["metrics_table"],
+                        config=state["config"],
+                        train_idx=state.get("train_idx"),
+                        test_idx=state.get("test_idx"),
+                        optimizer_state=state.get("optimizer_state"),
+                        custom_name=name,
+                    )
+                    grokked = is_grokked(state["metrics_table"])
+                    status = "GROKKED ✅" if grokked else "not grokked"
+                    return f"✅ **Saved as `{run_id}`** ({status}, P={state['config']['P']})"
+
+                save_btn.click(fn=do_save, inputs=[custom_name_input], outputs=[save_status])
+
+                gr.Markdown("---")
+                gr.Markdown("#### Load a Saved Run")
+                refresh_btn = gr.Button("🔄 Refresh Run List")
+                
+                runs_table = gr.Dataframe(
+                    label="Available Runs",
+                    interactive=False,
+                    headers=["run_id", "P", "grokked", "final_test_acc", "d_model", "n_heads", "d_mlp", "timestamp"],
+                )
+                
+                run_dropdown = gr.Dropdown(choices=[], label="Select a run to load")
+                with gr.Row():
+                    load_run_btn = gr.Button("📂 Load Selected Run", variant="primary")
+                    delete_run_btn = gr.Button("🗑️ Delete Selected Run", variant="stop")
+                
                 loaded_info = gr.Markdown()
                 loaded_plot = gr.Plot()
-                loaded_table = gr.Dataframe()
+                loaded_table = gr.Dataframe(label="Loaded Metrics")
 
                 def refresh_runs():
-                    """Refresh the dropdown with available runs."""
                     runs = list_saved_runs()
+                    if not runs:
+                        return (
+                            pd.DataFrame({"message": ["No saved runs found."]}),
+                            gr.Dropdown(choices=[]),
+                        )
+                    df = pd.DataFrame(runs)
                     choices = [r["run_id"] for r in runs]
-                    return gr.Dropdown(choices=choices, value=choices[0] if choices else None)
+                    return df, gr.Dropdown(choices=choices, value=choices[0] if choices else None)
 
-                def load_selected_run(run_id):
-                    """Load a run and display its data."""
+                def load_selected(run_id):
                     if not run_id:
                         return "No run selected.", go.Figure(), pd.DataFrame()
 
-                    model, train_losses, test_accs, metrics_df, config = load_run(run_id)
-                    state["model"] = model
-                    state["train_losses"] = train_losses
-                    state["test_accs"] = test_accs
+                    try:
+                        data = load_run(run_id)
+                    except FileNotFoundError as e:
+                        return f"❌ {e}", go.Figure(), pd.DataFrame()
 
-                    fig = make_training_plot(train_losses, test_accs)
+                    # Put into global state so all other tabs can use it
+                    state["model"] = data["model"]
+                    state["train_losses"] = data["train_losses"]
+                    state["test_accs"] = data["test_accs"]
+                    state["metrics_table"] = data["metrics_df"].to_dict("records")
+                    state["config"] = data["config"]
+                    state["train_idx"] = data["train_idx"]
+                    state["test_idx"] = data["test_idx"]
+                    state["optimizer_state"] = data["optimizer_state"]
+
+                    fig = make_training_plot(data["train_losses"], data["test_accs"])
+                    meta = data["meta"]
+                    config = data["config"]
 
                     info_md = (
-                        f"**Run ID:** {run_id}\n\n"
-                        f"**Config:** P={config['P']}, d_model={config['d_model']}, "
-                        f"n_heads={config['n_heads']}, d_mlp={config['d_mlp']}\n\n"
-                        f"**Train frac:** {config['train_frac']}, **LR:** {config['lr']}, "
-                        f"**WD:** {config['weight_decay']}\n\n"
-                        f"**Final test acc:** {metrics_df['test_acc'].iloc[-1]:.4f}\n\n"
-                        f"✅ Model loaded into state — you can now run circuit discovery."
+                        f"### ✅ Loaded: `{run_id}`\n\n"
+                        f"| Property | Value |\n"
+                        f"|----------|-------|\n"
+                        f"| P (modulus) | {config['P']} |\n"
+                        f"| d_model | {config['d_model']} |\n"
+                        f"| n_heads | {config['n_heads']} |\n"
+                        f"| d_mlp | {config['d_mlp']} |\n"
+                        f"| Train fraction | {config.get('train_frac', 'N/A')} |\n"
+                        f"| LR | {config.get('lr', 'N/A')} |\n"
+                        f"| Weight decay | {config.get('weight_decay', 'N/A')} |\n"
+                        f"| Grokked | {'✅ Yes' if meta.get('grokked') else '❌ No'} |\n"
+                        f"| Final test acc | {meta.get('final_test_acc', 'N/A')} |\n"
+                        f"| Epochs trained | {meta.get('epochs_trained', 'N/A')} |\n"
+                        f"| Saved at | {meta.get('timestamp', 'N/A')} |\n"
+                        f"| Has optimizer state | {'Yes' if data['optimizer_state'] else 'No'} |\n"
+                        f"| Has train/test split | {'Yes' if data['train_idx'] is not None else 'No'} |\n\n"
+                        f"**Model is now loaded into memory.** You can:\n"
+                        f"- Run **Fourier Discovery** or **ACDC** on it\n"
+                        f"- Use **Run Inference** to test predictions\n"
+                        f"- Use **Live Activations** to inspect internals\n"
+                        f"- Modify and re-save under a new name\n"
                     )
 
-                    return info_md, fig, metrics_df
+                    return info_md, fig, data["metrics_df"]
 
-                refresh_btn.click(
-                    fn=refresh_runs,
-                    inputs=[],
-                    outputs=[run_dropdown],
-                )
+                def delete_selected(run_id):
+                    if not run_id:
+                        return "No run selected."
+                    success = delete_run(run_id)
+                    if success:
+                        return f"🗑️ Deleted `{run_id}`"
+                    return f"❌ Could not delete `{run_id}`"
 
-                load_run_btn.click(
-                    fn=load_selected_run,
-                    inputs=[run_dropdown],
-                    outputs=[loaded_info, loaded_plot, loaded_table],
-                )
+                refresh_btn.click(fn=refresh_runs, inputs=[], outputs=[runs_table, run_dropdown])
+                load_run_btn.click(fn=load_selected, inputs=[run_dropdown], outputs=[loaded_info, loaded_plot, loaded_table])
+                delete_run_btn.click(fn=delete_selected, inputs=[run_dropdown], outputs=[loaded_info])
 
             # ===== TAB 6: Interactive Inference =====
             with gr.TabItem("Run Inference"):
@@ -2577,77 +2667,258 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
 
     return demo
 
-def save_run(model, train_losses, test_accs, metrics_table, config: dict):
-    """Save a complete training run: model weights + metrics + config."""
-    run_id = time.strftime("%Y%m%d_%H%M%S")
-    run_dir = Path(SAVE_DIR) / run_id
+# =============================================================================
+# Save / Load System (replaces existing save_run, list_saved_runs, load_run)
+# =============================================================================
+
+RUNS_DIR = "saved_runs"
+os.makedirs(RUNS_DIR, exist_ok=True)
+
+
+def _next_run_name(P: int, grokked: bool) -> str:
+    """
+    Auto-generate a run name like:
+      grokked_mod_113_1, grokked_mod_113_2, ...
+      ungrokked_mod_113_1, ...
+    """
+    prefix = "grokked" if grokked else "ungrokked"
+    base = f"{prefix}_mod_{P}"
+    
+    existing = []
+    runs_path = Path(RUNS_DIR)
+    if runs_path.exists():
+        for d in runs_path.iterdir():
+            if d.is_dir() and d.name.startswith(base + "_"):
+                try:
+                    num = int(d.name.split("_")[-1])
+                    existing.append(num)
+                except ValueError:
+                    pass
+    
+    next_num = max(existing, default=0) + 1
+    return f"{base}_{next_num}"
+
+
+def is_grokked(metrics_table: list[dict], threshold: float = 0.99) -> bool:
+    """Detect grokking: test accuracy >= threshold."""
+    if not metrics_table:
+        return False
+    final_test_acc = metrics_table[-1].get("test_acc", 0.0)
+    return final_test_acc >= threshold
+
+
+def save_run(model, train_losses, test_accs, metrics_table, config: dict,
+             train_idx=None, test_idx=None, optimizer_state=None,
+             custom_name: str = None) -> str:
+    """
+    Save a complete training run with everything needed to reload and experiment.
+    
+    Saves:
+      - model.pt: full model state_dict
+      - config.json: all hyperparameters (P, d_model, n_heads, d_mlp, lr, wd, etc.)
+      - metrics.csv: epoch-by-epoch training metrics
+      - curves.json: raw loss/accuracy curves for plotting
+      - split.pt: the exact train/test index split (so you can evaluate on same split)
+      - optimizer.pt: optimizer state_dict (so you can resume training if desired)
+      - meta.json: run metadata (name, timestamp, grokked status, etc.)
+    
+    Does NOT auto-save. Call this explicitly.
+    
+    Args:
+        custom_name: Override the auto-generated name. If None, auto-names.
+    
+    Returns:
+        run_id (str): The name/ID of the saved run.
+    """
+    grokked = is_grokked(metrics_table)
+    P = config.get("P", 113)
+    
+    if custom_name:
+        run_id = custom_name
+    else:
+        run_id = _next_run_name(P, grokked)
+    
+    run_dir = Path(RUNS_DIR) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save model weights
+    
+    # 1. Model weights
     torch.save(model.state_dict(), run_dir / "model.pt")
-
-    # Save config (hyperparameters needed to reconstruct the model)
+    
+    # 2. Config (everything needed to reconstruct the architecture)
     with open(run_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
-
-    # Save metrics
+    
+    # 3. Metrics table
     df = pd.DataFrame(metrics_table)
     df.to_csv(run_dir / "metrics.csv", index=False)
-
-    # Save loss/acc curves
+    
+    # 4. Raw curves for plotting
     with open(run_dir / "curves.json", "w") as f:
         json.dump({"train_losses": train_losses, "test_accs": test_accs}, f)
-
+    
+    # 5. Train/test split indices (critical for reproducibility)
+    if train_idx is not None and test_idx is not None:
+        torch.save({"train_idx": train_idx, "test_idx": test_idx}, run_dir / "split.pt")
+    
+    # 6. Optimizer state (for resuming training)
+    if optimizer_state is not None:
+        torch.save(optimizer_state, run_dir / "optimizer.pt")
+    
+    # 7. Metadata
+    meta = {
+        "run_id": run_id,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+        "grokked": grokked,
+        "final_test_acc": metrics_table[-1]["test_acc"] if metrics_table else 0.0,
+        "final_train_acc": metrics_table[-1].get("train_acc", 0.0) if metrics_table else 0.0,
+        "epochs_trained": metrics_table[-1]["epoch"] if metrics_table else 0,
+        "P": P,
+        "d_model": config.get("d_model"),
+        "n_heads": config.get("n_heads"),
+        "d_mlp": config.get("d_mlp"),
+    }
+    with open(run_dir / "meta.json", "w") as f:
+        json.dump(meta, f, indent=2)
+    
     return run_id
 
-def list_saved_runs() -> list[dict]:
-    """List all saved runs with their summary info."""
-    runs = []
-    save_path = Path(SAVE_DIR)
-    if not save_path.exists():
-        return runs
 
-    for run_dir in sorted(save_path.iterdir(), reverse=True):
-        if run_dir.is_dir() and (run_dir / "config.json").exists():
+def list_saved_runs() -> list[dict]:
+    """List all saved runs with summary info, sorted by recency."""
+    runs = []
+    runs_path = Path(RUNS_DIR)
+    if not runs_path.exists():
+        return runs
+    
+    for run_dir in sorted(runs_path.iterdir(), reverse=True):
+        if run_dir.is_dir() and (run_dir / "meta.json").exists():
+            with open(run_dir / "meta.json") as f:
+                meta = json.load(f)
+            runs.append(meta)
+        elif run_dir.is_dir() and (run_dir / "config.json").exists():
+            # Backwards compat with old format
             with open(run_dir / "config.json") as f:
                 config = json.load(f)
-            # Get final test accuracy from metrics
             metrics_path = run_dir / "metrics.csv"
-            final_acc = "N/A"
+            final_acc = 0.0
             if metrics_path.exists():
                 df = pd.read_csv(metrics_path)
                 if len(df) > 0:
-                    final_acc = f"{df['test_acc'].iloc[-1]:.4f}"
+                    final_acc = df["test_acc"].iloc[-1]
             runs.append({
                 "run_id": run_dir.name,
-                "P": config.get("P"),
-                "epochs_trained": config.get("epochs"),
+                "timestamp": "unknown",
+                "grokked": final_acc >= 0.99,
                 "final_test_acc": final_acc,
+                "P": config.get("P"),
+                "d_model": config.get("d_model"),
+                "n_heads": config.get("n_heads"),
+                "d_mlp": config.get("d_mlp"),
             })
+    
     return runs
 
 
-def load_run(run_id: str):
-    """Load a saved run: reconstruct model and return metrics."""
-    run_dir = Path(SAVE_DIR) / run_id
-
+def load_run(run_id: str) -> dict:
+    """
+    Load a saved run. Returns everything needed to experiment without retraining.
+    
+    Returns dict with keys:
+      - model: loaded ModularAdditionTransformer (eval mode)
+      - config: hyperparameter dict
+      - metrics_df: pandas DataFrame of training metrics
+      - train_losses: list of (epoch, loss) tuples
+      - test_accs: list of (epoch, acc) tuples
+      - train_idx: tensor of training indices (or None)
+      - test_idx: tensor of test indices (or None)
+      - optimizer_state: optimizer state_dict (or None)
+      - meta: metadata dict
+    """
+    run_dir = Path(RUNS_DIR) / run_id
+    
+    if not run_dir.exists():
+        raise FileNotFoundError(f"Run '{run_id}' not found in {RUNS_DIR}/")
+    
+    # Config
     with open(run_dir / "config.json") as f:
         config = json.load(f)
-
-    # Reconstruct model architecture from config
+    
+    # Reconstruct model
     model = ModularAdditionTransformer(
-        P=config["P"], d_model=config["d_model"],
-        n_heads=config["n_heads"], d_mlp=config["d_mlp"]
+        P=config["P"],
+        d_model=config["d_model"],
+        n_heads=config["n_heads"],
+        d_mlp=config["d_mlp"],
     )
-    model.load_state_dict(torch.load(run_dir / "model.pt", map_location="cpu"))
+    model.load_state_dict(torch.load(run_dir / "model.pt", map_location="cpu", weights_only=True))
     model.eval()
-
+    
+    # Curves
     with open(run_dir / "curves.json") as f:
         curves = json.load(f)
-
+    
+    # Metrics
     metrics_df = pd.read_csv(run_dir / "metrics.csv")
+    
+    # Split (optional)
+    train_idx, test_idx = None, None
+    split_path = run_dir / "split.pt"
+    if split_path.exists():
+        split_data = torch.load(split_path, map_location="cpu", weights_only=True)
+        train_idx = split_data["train_idx"]
+        test_idx = split_data["test_idx"]
+    
+    # Optimizer (optional)
+    optimizer_state = None
+    opt_path = run_dir / "optimizer.pt"
+    if opt_path.exists():
+        optimizer_state = torch.load(opt_path, map_location="cpu", weights_only=True)
+    
+    # Meta
+    meta = {}
+    meta_path = run_dir / "meta.json"
+    if meta_path.exists():
+        with open(meta_path) as f:
+            meta = json.load(f)
+    
+    return {
+        "model": model,
+        "config": config,
+        "metrics_df": metrics_df,
+        "train_losses": curves["train_losses"],
+        "test_accs": curves["test_accs"],
+        "train_idx": train_idx,
+        "test_idx": test_idx,
+        "optimizer_state": optimizer_state,
+        "meta": meta,
+    }
 
-    return model, curves["train_losses"], curves["test_accs"], metrics_df, config
+
+def delete_run(run_id: str) -> bool:
+    """Delete a saved run."""
+    run_dir = Path(RUNS_DIR) / run_id
+    if run_dir.exists():
+        shutil.rmtree(run_dir)
+        return True
+    return False
+
+
+def rename_run(old_id: str, new_id: str) -> bool:
+    """Rename a saved run."""
+    old_dir = Path(RUNS_DIR) / old_id
+    new_dir = Path(RUNS_DIR) / new_id
+    if old_dir.exists() and not new_dir.exists():
+        old_dir.rename(new_dir)
+        # Update meta.json
+        meta_path = new_dir / "meta.json"
+        if meta_path.exists():
+            with open(meta_path) as f:
+                meta = json.load(f)
+            meta["run_id"] = new_id
+            with open(meta_path, "w") as f:
+                json.dump(meta, f, indent=2)
+        return True
+    return False
 
 # =============================================================================
 # Main Entry Point
