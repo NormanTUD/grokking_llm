@@ -500,12 +500,23 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
 
     if show_concrete:
         mlp_step = trace["steps"][3]
-        mlp_eqs.append(
-            rf"\text{{Key neurons firing: }}"
-            rf"\underbrace{{{mlp_step['key_active_neurons']}}}_{{\\text{{active}}}}"
-            rf"\;/\;\underbrace{{{trace['weights_info']['n_key_neurons']}}}_{{\\text{{assigned}}}}"
-            rf"\quad(\text{{total active in MLP: }}{mlp_step['total_active_neurons']}/{d_mlp})"
-        )
+        n_active = mlp_step['key_active_neurons']
+        n_assigned = trace['weights_info']['n_key_neurons']
+        n_total_active = mlp_step['total_active_neurons']
+
+        if n_assigned == 0:
+            mlp_eqs.append(
+                rf"\text{{Key neurons firing: }}"
+                rf"\text{{N/A (no neurons assigned — run circuit discovery first)}}"
+                rf"\quad(\text{{total active in MLP: }}{n_total_active}/{d_mlp})"
+            )
+        else:
+            mlp_eqs.append(
+                rf"\text{{Key neurons firing: }}"
+                rf"\underbrace{{{n_active}}}_{{\text{{active}}}}"
+                rf"\;/\;\underbrace{{{n_assigned}}}_{{\text{{assigned}}}}"
+                rf"\quad(\text{{total active in MLP: }}{n_total_active}/{d_mlp})"
+            )
 
         neurons_by_freq = mlp_step["neurons_by_frequency"]
         for k in sorted(neurons_by_freq.keys()):
