@@ -579,152 +579,28 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
 
 def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) -> str:
     """
-    Build final HTML with equations rendered SERVER-SIDE to MathML via latex2mathml.
-    No JavaScript needed — browsers render MathML natively.
-    Gradio gr.HTML() will display this immediately without script execution issues.
+    Build Markdown string with LaTeX equations in $$...$$ blocks.
+    Gradio's gr.Markdown() renders these natively via KaTeX — no external
+    libraries, no JavaScript timing issues, no MathML conversion needed.
+    This is the same approach that works in the LaTeX Equations tab.
     """
-    import random
-
-    try:
-        import latex2mathml.converter
-        has_latex2mathml = True
-    except ImportError:
-        has_latex2mathml = False
-
-    container_id = f"circuit-equations-{random.randint(10000, 99999)}"
-
-    def render_latex(tex: str) -> str:
-        """Convert LaTeX to MathML, with progressive simplification on failure."""
-        if not has_latex2mathml:
-            escaped = tex.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            return f'<code class="eq-fallback">{escaped}</code>'
-
-        # Try full LaTeX first
-        try:
-            return latex2mathml.converter.convert(tex)
-        except Exception:
-            pass
-
-        # Simplify: remove unsupported commands
-        import re
-        simplified = tex
-        # Remove \underbrace{X}_{Y} -> X
-        simplified = re.sub(r'\\underbrace\{([^}]*)\}_\{[^}]*\}', r'\1', simplified)
-        # Remove \overbrace{X}^{Y} -> X
-        simplified = re.sub(r'\\overbrace\{([^}]*)\}\^\{[^}]*\}', r'\1', simplified)
-        # Remove \color{...}
-        simplified = re.sub(r'\\color\{[^}]*\}', '', simplified)
-        # Remove \boxed{X} -> X
-        simplified = re.sub(r'\\boxed\{([^}]*)\}', r'\1', simplified)
-        # \text{X} -> \mathrm{X}
-        simplified = simplified.replace(r'\text{', r'\mathrm{')
-        # \; \quad etc -> space
-        simplified = re.sub(r'\\[;,!]|\\quad|\\qquad', ' ', simplified)
-        # \checkmark -> ✓
-        simplified = simplified.replace(r'\checkmark', '✓')
-        # \times -> ×
-        simplified = simplified.replace(r'\times', '×')
-        # \leftarrow -> ←
-        simplified = simplified.replace(r'\leftarrow', '←')
-
-        try:
-            return latex2mathml.converter.convert(simplified)
-        except Exception:
-            # Final fallback: show raw LaTeX
-            escaped = tex.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            return f'<code class="eq-fallback">{escaped}</code>'
-
-    equation_blocks = []
+    lines = []
 
     # Header
-    header_rendered = render_latex(header_latex)
-    equation_blocks.append(f'<div class="eq-header">{header_rendered}</div>')
+    lines.append(f"$$\n{header_latex}\n$$")
+    lines.append("")
 
     # Sections
     for section_title, equations in sections:
-        eq_html_items = []
+        lines.append(f"### {section_title}")
+        lines.append("")
         for eq in equations:
-            rendered = render_latex(eq)
-            eq_html_items.append(f'<div class="eq-line">{rendered}</div>')
+            lines.append(f"$$\n{eq}\n$$")
+            lines.append("")
+        lines.append("---")
+        lines.append("")
 
-        equation_blocks.append(f'''
-            <div class="eq-section">
-                <h3 class="eq-section-title">{section_title}</h3>
-                {"".join(eq_html_items)}
-            </div>
-        ''')
-
-    html = f'''
-    <div id="{container_id}">
-        <style>
-            #{container_id} {{
-                font-family: 'Latin Modern', 'Computer Modern', 'STIX Two Math', Georgia, serif;
-                max-width: 100%;
-                padding: 1.2em;
-                background: #fafbfc;
-                border-radius: 10px;
-                border: 1px solid #d0d7de;
-                line-height: 2.0;
-                color: #1a1a1a;
-            }}
-            #{container_id} .eq-header {{
-                text-align: center;
-                font-size: 1.3em;
-                margin-bottom: 1.5em;
-                padding: 0.7em 1em;
-                background: linear-gradient(135deg, #e8f5e9, #f1f8e9);
-                border-radius: 8px;
-                border: 1px solid #c8e6c9;
-            }}
-            #{container_id} .eq-section {{
-                margin-bottom: 1.5em;
-                padding: 1em 1.2em;
-                background: #ffffff;
-                border-radius: 8px;
-                border-left: 4px solid #1976d2;
-                box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-            }}
-            #{container_id} .eq-section-title {{
-                color: #1565c0;
-                font-size: 1.1em;
-                font-weight: 700;
-                margin: 0 0 0.7em 0;
-                padding-bottom: 0.4em;
-                border-bottom: 2px solid #e3f2fd;
-            }}
-            #{container_id} .eq-line {{
-                margin: 0.6em 0;
-                padding: 0.5em 0.8em;
-                overflow-x: auto;
-                border-radius: 4px;
-                min-height: 1.8em;
-                background: #f8f9fa;
-                border: 1px solid #e8e8e8;
-            }}
-            #{container_id} .eq-line:hover {{
-                background: #eef2ff;
-                border-color: #c8d4e8;
-            }}
-            #{container_id} math {{
-                font-size: 1.15em;
-                color: #1a1a1a;
-            }}
-            #{container_id} .eq-fallback {{
-                font-family: 'JetBrains Mono', 'Fira Code', monospace;
-                font-size: 0.85em;
-                color: #333;
-                background: #f0f0f0;
-                padding: 3px 6px;
-                border-radius: 3px;
-                word-break: break-all;
-                white-space: pre-wrap;
-            }}
-        </style>
-
-        {"".join(equation_blocks)}
-    </div>
-    '''
-    return html
+    return "\n".join(lines)
 
 # =============================================================================
 # Rewritten: build_equation_viewer_tab — now with Temml equations FIRST
@@ -733,11 +609,7 @@ def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) 
 def build_equation_viewer_tab(state: dict):
     """
     Build the Gradio tab for the interactive circuit equation viewer.
-    Now renders Temml equations as the PRIMARY output, with plots below.
-
-    Usage in grok.py:
-        with gr.TabItem("🔢 Circuit Equations (Live)"):
-            build_equation_viewer_tab(state)
+    Uses gr.Markdown with $$...$$ for equation rendering (same as LaTeX tab).
     """
     import gradio as gr
 
@@ -767,14 +639,20 @@ def build_equation_viewer_tab(state: dict):
 
     gr.Markdown("---")
 
-    # PRIMARY OUTPUT: Temml-rendered equations
+    # PRIMARY OUTPUT: Rendered equations via gr.Markdown (KaTeX)
     gr.Markdown("#### Rendered Circuit Equations")
-    eq_temml_html = gr.HTML(label="Circuit Equations (Temml)")
+    eq_temml_html = gr.Markdown(
+        value="*Click 'Trace Full Computation' to see equations here.*",
+        latex_delimiters=[
+            {"left": "$$", "right": "$$", "display": True},
+            {"left": "$", "right": "$", "display": False},
+        ],
+    )
 
     # SECONDARY: Summary
     eq_summary_md = gr.Markdown(label="Computation Summary")
 
-    # TERTIARY: Plots (kept from before)
+    # TERTIARY: Plots
     gr.Markdown("---")
     gr.Markdown("#### Visual Plots")
     eq_flow_plot = gr.Plot(label="Full Circuit Flow (Visual)")
@@ -788,7 +666,7 @@ def build_equation_viewer_tab(state: dict):
         eq_text_output = gr.Textbox(
             label="Step-by-Step Equations (Text)",
             lines=30,
-            interactive=False
+            interactive=False,
         )
 
     # Comparison section
@@ -803,11 +681,10 @@ def build_equation_viewer_tab(state: dict):
     eq_compare_plot = gr.Plot(label="Multi-Input Comparison")
 
     def run_equation_viewer(a, b, show_abstract, show_concrete, max_neurons, freq_select):
-        """Run the full equation viewer with Temml output."""
+        """Run the full equation viewer."""
         if state.get("model") is None:
-            empty_html = "<p style='color:red;font-size:1.2em'>⚠️ No model loaded! Train or load a model first.</p>"
             return (
-                empty_html,
+                "⚠️ **No model loaded!** Train or load a model first.",
                 "⚠️ No model loaded!",
                 go.Figure(),
                 go.Figure(),
@@ -815,9 +692,8 @@ def build_equation_viewer_tab(state: dict):
             )
 
         if state.get("circuit") is None:
-            empty_html = "<p style='color:red;font-size:1.2em'>⚠️ No circuit discovered! Run Fourier Discovery first.</p>"
             return (
-                empty_html,
+                "⚠️ **No circuit discovered!** Run Fourier Discovery first.",
                 "⚠️ No circuit discovered!",
                 go.Figure(),
                 go.Figure(),
@@ -854,7 +730,7 @@ def build_equation_viewer_tab(state: dict):
         confidence = trace["summary"]["confidence"]
         is_correct = trace["summary"]["is_correct"]
 
-        # Generate Temml HTML (PRIMARY OUTPUT)
+        # Generate equations as Markdown with $$...$$ (PRIMARY OUTPUT)
         temml_html = generate_temml_equation_html(
             trace,
             show_abstract=show_abstract,
@@ -941,7 +817,6 @@ def build_equation_viewer_tab(state: dict):
         outputs=[eq_compare_plot],
     )
 
-    # Update frequency dropdown on run
     eq_run_btn.click(
         fn=update_freq_dropdown,
         inputs=[],
