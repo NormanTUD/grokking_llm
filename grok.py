@@ -128,6 +128,8 @@ import torch.nn.functional as F
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from circuit_equation_viewer import build_equation_viewer_tab
+
 warnings.filterwarnings("ignore")
 
 # Directory to save training logs
@@ -2407,6 +2409,10 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
                     inputs=[],
                     outputs=[latex_display_md, latex_raw_output, latex_quick_ref],
                 )
+
+            # ===== TAB: Circuit Equations (Live) =====
+            with gr.TabItem("🔢 Circuit Equations (Live)"):
+                build_equation_viewer_tab(state)
 
             # ===== TAB: Live Activation Viewer =====
             with gr.TabItem("🔬 Live Activations"):

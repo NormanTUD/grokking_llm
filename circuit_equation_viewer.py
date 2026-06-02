@@ -25,19 +25,13 @@ def extract_relevant_circuit_weights(model, key_frequencies: list[int],
     modular addition circuit. This filters thousands of parameters down to
     the ones that actually do the computation.
 
-    Returns a dict with:
-      - W_E: embedding matrix (P x d_model)
-      - W_P: positional embedding (3 x d_model)
-      - W_Q, W_K, W_V per head: (d_model x d_head)
-      - W_O: output projection (n_heads*d_head x d_model)
-      - W_in: MLP input weights (d_model x d_mlp)
-      - b_in: MLP input bias (d_mlp,)
-      - W_out: MLP output weights (d_mlp x d_model)
-      - b_out: MLP output bias (d_model,)
-      - W_U: unembedding (d_model x P)
-      - key_neuron_indices: list of neuron indices that are assigned
-      - key_frequencies: the frequencies that matter
-      - fourier_components: precomputed cos/sin for each freq and token
+    Adapted to work with ModularAdditionTransformer which uses:
+      - model.W_Q, model.W_K, model.W_V, model.W_O: nn.Linear (no bias)
+      - model.mlp_in: nn.Linear (with bias)
+      - model.mlp_out: nn.Linear (with bias)
+      - model.embed: nn.Embedding(P+1, d_model)
+      - model.pos_embed: nn.Embedding(3, d_model)
+      - model.unembed: nn.Linear(d_model, P, bias=False)
     """
     P = model.P
     d_model = model.d_model
@@ -45,21 +39,53 @@ def extract_relevant_circuit_weights(model, key_frequencies: list[int],
     d_head = d_model // n_heads
 
     with torch.no_grad():
+        # Embeddings
         W_E = model.embed.weight[:P].cpu().numpy()          # (P, d_model)
         W_P = model.pos_embed.weight.cpu().numpy()          # (3, d_model)
-        W_U = model.unembed.weight.cpu().numpy()            # (P, d_model) -> we need (d_model, P)
 
-        # Attention weights
-        W_Q = model.attn.W_Q.cpu().numpy()  # (n_heads, d_model, d_head)
-        W_K = model.attn.W_K.cpu().numpy()  # (n_heads, d_model, d_head)
-        W_V = model.attn.W_V.cpu().numpy()  # (n_heads, d_model, d_head)
-        W_O = model.attn.W_O.cpu().numpy()  # (n_heads, d_head, d_model)
+        # Unembedding: nn.Linear(d_model, P, bias=False)
+        # .weight shape is (P, d_model) — each row is the unembedding vector for class c
+        W_U = model.unembed.weight.cpu().numpy()            # (P, d_model)
+
+        # Attention weights: nn.Linear(d_model, d_model, bias=False)
+        # .weight shape is (d_model, d_model) — we reshape to (n_heads, d_model, d_head)
+        # Note: nn.Linear stores weight as (out_features, in_features)
+        # So W_Q.weight is (d_model, d_model), and the forward does x @ W.T
+        # i.e., Q = x @ W_Q.weight.T
+        W_Q_full = model.W_Q.weight.cpu().numpy()  # (d_model, d_model)
+        W_K_full = model.W_K.weight.cpu().numpy()  # (d_model, d_model)
+        W_V_full = model.W_V.weight.cpu().numpy()  # (d_model, d_model)
+        W_O_full = model.W_O.weight.cpu().numpy()  # (d_model, d_model)
+
+        # Reshape into per-head matrices
+        # nn.Linear: output = input @ weight.T
+        # So Q = x @ W_Q.weight.T, and W_Q.weight.T is (d_model, d_model)
+        # Per head: Q_h = x @ W_Q_h where W_Q_h is (d_model, d_head)
+        # W_Q.weight.T reshaped: (d_model, n_heads, d_head)
+        W_Q_T = W_Q_full.T  # (d_model, d_model) — this is what x gets multiplied by
+        W_K_T = W_K_full.T  # (d_model, d_model)
+        W_V_T = W_V_full.T  # (d_model, d_model)
+        W_O_T = W_O_full.T  # (d_model, d_model)
+
+        # Reshape to per-head: (d_model, n_heads, d_head) then transpose to (n_heads, d_model, d_head)
+        W_Q = W_Q_T.reshape(d_model, n_heads, d_head).transpose(1, 0, 2)  # (n_heads, d_model, d_head)
+        W_K = W_K_T.reshape(d_model, n_heads, d_head).transpose(1, 0, 2)  # (n_heads, d_model, d_head)
+        W_V = W_V_T.reshape(d_model, n_heads, d_head).transpose(1, 0, 2)  # (n_heads, d_model, d_head)
+
+        # W_O: the model does attn_out.view(batch, 1, d_model) then W_O(attn_out)
+        # W_O.weight is (d_model, d_model), forward: output = input @ W_O.weight.T
+        # Per head contribution: head_h (d_head) gets projected by W_O_h (d_head, d_model)
+        # W_O.weight.T is (d_model, d_model), reshape input side: (n_heads, d_head, d_model)
+        W_O = W_O_T.reshape(n_heads, d_head, d_model)  # (n_heads, d_head, d_model)
 
         # MLP weights
-        W_in = model.mlp.W_in.weight.cpu().numpy()    # (d_mlp, d_model)
-        b_in = model.mlp.W_in.bias.cpu().numpy()      # (d_mlp,)
-        W_out = model.mlp.W_out.weight.cpu().numpy()  # (d_model, d_mlp)
-        b_out = model.mlp.W_out.bias.cpu().numpy()    # (d_model,)
+        # mlp_in: nn.Linear(d_model, d_mlp) — weight is (d_mlp, d_model), bias is (d_mlp,)
+        W_in = model.mlp_in.weight.cpu().numpy()    # (d_mlp, d_model)
+        b_in = model.mlp_in.bias.cpu().numpy()      # (d_mlp,)
+
+        # mlp_out: nn.Linear(d_mlp, d_model) — weight is (d_model, d_mlp), bias is (d_model,)
+        W_out = model.mlp_out.weight.cpu().numpy()  # (d_model, d_mlp)
+        b_out = model.mlp_out.bias.cpu().numpy()    # (d_model,)
 
     # Identify which neurons are relevant
     key_neuron_indices = sorted(int(idx) for idx in neuron_assignments.keys())
@@ -94,7 +120,6 @@ def extract_relevant_circuit_weights(model, key_frequencies: list[int],
         "neuron_assignments": neuron_assignments,
         "fourier_components": fourier_components,
     }
-
 
 # =============================================================================
 # Full Forward Pass with Equation Annotations
