@@ -554,7 +554,7 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
         )
 
         logit_eqs.append(
-            rf"\text{{Logit}}({correct}) = {logit_val:.4f},\quad"
+            rf"\text{{Logit}}({correct}) = {logit_val:.4f},\quad "
             rf"P(c\!=\!{correct}\mid {a},{b}) = {prob_val:.4f},\quad"
             rf"\rho_{{\text{{actual vs ideal}}}} = {corr:.4f}"
         )
