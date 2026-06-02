@@ -297,13 +297,13 @@ def find_circular_dimension_pairs(model: ModularAdditionTransformer,
 
     return results
 
-
 def make_auto_circle_plot(model: ModularAdditionTransformer,
                           pair_info: dict) -> go.Figure:
     """
     Create a circle plot from a pre-computed pair_info dict
     (as returned by find_circular_dimension_pairs).
     Uses a cyclic blue→green→blue colorscale to emphasize circular ordering.
+    Color is based on token NUMBER (0..P-1), NOT geometric angle.
     """
     P = model.P
     x_coords = pair_info["x_coords"]
@@ -311,11 +311,12 @@ def make_auto_circle_plot(model: ModularAdditionTransformer,
 
     fig = go.Figure()
 
-    # Compute angles relative to center for color mapping (ensures cyclic color follows position on circle)
+    # Color based on token number (cyclic: 0 → blue, P//2 → green, P-1 → almost blue again)
+    color_values = np.arange(P) / P  # [0, 1), cyclic
+
+    # Still compute angles for hover info
     cx, cy = x_coords.mean(), y_coords.mean()
     angles = np.arctan2(y_coords - cy, x_coords - cx)  # [-pi, pi]
-    # Normalize to [0, 1] for colorscale mapping
-    color_values = (angles + np.pi) / (2 * np.pi)  # [0, 1], cyclic
 
     fig.add_trace(go.Scatter(
         x=x_coords,
@@ -327,9 +328,9 @@ def make_auto_circle_plot(model: ModularAdditionTransformer,
             colorscale=CYCLIC_BLUE_GREEN,
             showscale=True,
             colorbar=dict(
-                title="Position (zyklisch)",
-                tickvals=[0, 0.25, 0.5, 0.75, 1.0],
-                ticktext=["0°", "90°", "180°", "270°", "360°"],
+                title="Token-Nummer",
+                tickvals=[0, 0.25, 0.5, 0.75],
+                ticktext=[f"0", f"{P//4}", f"{P//2}", f"{3*P//4}"],
             ),
         ),
         text=[str(i) for i in range(P)],
@@ -386,12 +387,11 @@ def make_auto_circle_plot(model: ModularAdditionTransformer,
 
     return fig
 
-
 def make_all_circles_summary(model: ModularAdditionTransformer,
                              key_frequencies: list[int] = None) -> go.Figure:
     """
     Create a summary figure showing ALL discovered circles in a grid.
-    Uses cyclic blue→green→blue colorscale.
+    Uses cyclic blue→green→blue colorscale based on token NUMBER.
     """
     pairs = find_circular_dimension_pairs(model, key_frequencies, top_k_pairs=3)
 
@@ -407,6 +407,8 @@ def make_all_circles_summary(model: ModularAdditionTransformer,
     )
 
     P = model.P
+    # Color based on token number, same for all subplots
+    color_values = np.arange(P) / P  # [0, 1), cyclic
 
     for idx, pair in enumerate(pairs[:n_plots]):
         row = idx // n_cols + 1
@@ -414,11 +416,6 @@ def make_all_circles_summary(model: ModularAdditionTransformer,
 
         x_coords = pair["x_coords"]
         y_coords = pair["y_coords"]
-
-        # Compute angle-based color for cyclic mapping
-        cx, cy = x_coords.mean(), y_coords.mean()
-        angles = np.arctan2(y_coords - cy, x_coords - cx)
-        color_values = (angles + np.pi) / (2 * np.pi)
 
         fig.add_trace(go.Scatter(
             x=x_coords, y=y_coords,
@@ -430,6 +427,7 @@ def make_all_circles_summary(model: ModularAdditionTransformer,
         ), row=row, col=col)
 
         # Fitted circle
+        cx, cy = x_coords.mean(), y_coords.mean()
         radii = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
         avg_r = radii.mean()
         theta = np.linspace(0, 2*np.pi, 100)
@@ -449,7 +447,6 @@ def make_all_circles_summary(model: ModularAdditionTransformer,
 
     return fig
 
-
 # =============================================================================
 # Winkel-Analyse Tool
 # =============================================================================
@@ -461,6 +458,8 @@ def compute_circle_angles(model: ModularAdditionTransformer, pair_info: dict) ->
     2. Eine Tabelle mit den paarweisen Winkeldifferenzen (alle mit allen)
     3. Eine Plotly-Figur, die die Winkel visuell auf dem Kreis zeigt
     4. Eine Heatmap der paarweisen Differenzen
+
+    Farben basieren auf der TOKEN-NUMMER, nicht auf dem geometrischen Winkel.
 
     Returns: (angle_table: pd.DataFrame, diff_df: pd.DataFrame, angle_fig: go.Figure, heatmap_fig: go.Figure)
     """
@@ -517,8 +516,9 @@ def compute_circle_angles(model: ModularAdditionTransformer, pair_info: dict) ->
         hoverinfo="skip",
     ))
 
-    # Tokens mit Farbe nach Winkel (zyklisch)
-    color_values = angles_deg / 360.0
+    # Tokens mit Farbe nach TOKEN-NUMMER (zyklisch), NICHT nach Winkel
+    color_values = np.arange(P) / P  # [0, 1), cyclic
+
     fig.add_trace(go.Scatter(
         x=x_coords,
         y=y_coords,
@@ -529,9 +529,9 @@ def compute_circle_angles(model: ModularAdditionTransformer, pair_info: dict) ->
             colorscale=CYCLIC_BLUE_GREEN,
             showscale=True,
             colorbar=dict(
-                title="Winkel (°)",
-                tickvals=[0, 0.25, 0.5, 0.75, 1.0],
-                ticktext=["0°", "90°", "180°", "270°", "360°"],
+                title="Token-Nummer",
+                tickvals=[0, 0.25, 0.5, 0.75],
+                ticktext=[f"0", f"{P//4}", f"{P//2}", f"{3*P//4}"],
             ),
         ),
         text=[str(i) for i in range(P)],
@@ -922,20 +922,23 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
     """
     Plot token embeddings projected onto a chosen pair of dimensions.
     Shows circles with real coordinate values for each token.
+    Color is based on token NUMBER (0..P-1), NOT geometric angle.
     """
     P = model.P
     W_E = model.embed.weight[:P].detach().cpu().numpy()  # (P, d_model)
-    
+
     x_coords = W_E[:, dim_x]
     y_coords = W_E[:, dim_y]
-    
+
     fig = go.Figure()
-    
-    # Compute angles relative to center for cyclic color mapping
+
+    # Color based on token number (cyclic), NOT on geometric angle
+    color_values = np.arange(P) / P  # [0, 1), cyclic
+
+    # Still compute angles for hover info
     cx, cy = x_coords.mean(), y_coords.mean()
     angles = np.arctan2(y_coords - cy, x_coords - cx)  # [-pi, pi]
-    color_values = (angles + np.pi) / (2 * np.pi)  # [0, 1], cyclic
-    
+
     # Plot all token positions with cyclic blue→green→blue colorscale
     fig.add_trace(go.Scatter(
         x=x_coords,
@@ -947,9 +950,9 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
             colorscale=CYCLIC_BLUE_GREEN,
             showscale=True,
             colorbar=dict(
-                title="Position (zyklisch)",
-                tickvals=[0, 0.25, 0.5, 0.75, 1.0],
-                ticktext=["0°", "90°", "180°", "270°", "360°"],
+                title="Token-Nummer",
+                tickvals=[0, 0.25, 0.5, 0.75],
+                ticktext=[f"0", f"{P//4}", f"{P//2}", f"{3*P//4}"],
             ),
         ),
         text=[str(i) for i in range(P)],
@@ -970,15 +973,15 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
         ),
         name="Token Embeddings",
     ))
-    
+
     # Fit and draw a circle to show the circular structure
     radii = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
     avg_radius = radii.mean()
-    
+
     theta = np.linspace(0, 2*np.pi, 200)
     circle_x = cx + avg_radius * np.cos(theta)
     circle_y = cy + avg_radius * np.sin(theta)
-    
+
     fig.add_trace(go.Scatter(
         x=circle_x, y=circle_y,
         mode="lines",
@@ -986,7 +989,7 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
         name=f"Fitted circle (r={avg_radius:.3f})",
         hoverinfo="skip",
     ))
-    
+
     # Draw lines connecting consecutive tokens to show winding order
     for i in range(P):
         j = (i + 1) % P
@@ -998,7 +1001,7 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
             showlegend=False,
             hoverinfo="skip",
         ))
-    
+
     # Add annotations showing the actual values for a few tokens
     for token_id in [0, P//4, P//2, 3*P//4]:
         fig.add_annotation(
@@ -1007,7 +1010,7 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
             showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=1,
             font=dict(size=9, color="red"),
         )
-    
+
     fig.update_layout(
         title=f"Embedding Space: Dim {dim_x} vs Dim {dim_y} (P={P})",
         xaxis_title=f"Dimension {dim_x}",
@@ -1016,7 +1019,7 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
         height=650,
         width=700,
     )
-    
+
     return fig
 
 def make_embedding_all_dims_heatmap(model: ModularAdditionTransformer, token_id: int = 0) -> go.Figure:
