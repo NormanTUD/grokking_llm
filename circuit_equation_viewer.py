@@ -332,7 +332,7 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
         r"\begin{array}{|c|c|l|}"
         r"\hline"
         r"\textbf{Symbol} & \textbf{Value} & \textbf{Meaning} \\"
-        r"\hline"
+        r"\hline "
         rf"a & {a} & \text{{First input token}} \\"
         rf"b & {b} & \text{{Second input token}} \\"
         rf"P & {P} & \text{{Prime modulus}} \\"
