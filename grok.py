@@ -2445,25 +2445,59 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
                     choices=[], label="Select a discovered circle to inspect",
                     interactive=True,
                 )
-                inspect_circle_btn = gr.Button("Inspect Selected Circle")
+                inspect_circle_btn = gr.Button("🔎 Inspect Selected Circle")
+
                 single_circle_plot = gr.Plot(label="Detailed Circle View")
+
+                gr.Markdown("---")
+                gr.Markdown("#### 📐 Projection Explanation — What Are You Actually Looking At?")
+                gr.Markdown(
+                    "The plot below shows **exactly** how the circle coordinates are computed. "
+                    "It reveals that each point on the circle is a **weighted sum of ALL embedding "
+                    "dimensions**, not a single raw dimension. This is why raw dimension pairs "
+                    "look like random scatter — the circular structure lives in a specific 2D "
+                    "subspace that is NOT aligned with any coordinate axis."
+                )
+                projection_explanation_plot = gr.Plot(
+                    label="Projection Explanation (4-panel breakdown)"
+                )
+                projection_equation_md = gr.Markdown(
+                    value="*Select and inspect a circle above to see the full mathematical breakdown.*",
+                    label="Full Equation Breakdown",
+                )
 
                 # State for discovered pairs
                 discovered_pairs_state = gr.State([])
 
                 gr.Markdown("---")
-                gr.Markdown("#### Manual Override (if needed)")
+                gr.Markdown("""#### Manual Override — Raw Embedding Dimensions
+
+                ⚠️ **These are raw individual dimensions** (e.g., `W_E[:, 5]` vs `W_E[:, 12]`).
+                They will usually **NOT** look like circles because the circular structure is
+                encoded across *all* dimensions simultaneously.
+
+                The circles above are found via **Fourier projections** or **PCA** — these are
+                weighted sums of all dimensions, not single coordinate axes.
+
+                **Why?** A single raw dimension contains contributions from ALL frequencies mixed together:
+
+                $$W_E[t, d] = \\sum_{k=0}^{P/2} \\left[ \\alpha_{k,d} \\cos\\left(\\frac{2\\pi k t}{P}\\right) + \\beta_{k,d} \\sin\\left(\\frac{2\\pi k t}{P}\\right) \\right]$$
+
+                The Fourier projection **isolates** one frequency $k$ by projecting out all others.
+                """)
+
                 with gr.Row():
                     dim_x_select = gr.Number(value=0, label="X Dimension", precision=0)
                     dim_y_select = gr.Number(value=1, label="Y Dimension", precision=0)
                     token_select = gr.Number(value=0, label="Token ID (for all-dims view)", precision=0)
 
                 with gr.Row():
-                    embed_circle_btn = gr.Button("Show Manual Pair")
+                    embed_circle_btn = gr.Button("Show Manual Pair (raw dims)")
                     embed_alldims_btn = gr.Button("Show All Dimensions for Token")
 
-                embed_circle_plot = gr.Plot(label="Embedding Circle (2D projection)")
+                embed_circle_plot = gr.Plot(label="Raw Embedding Dimensions (usually NOT a circle)")
                 embed_alldims_plot = gr.Plot(label="All Embedding Dimensions")
+
 
                 gr.Markdown("---")
                 gr.Markdown("#### 📐 Winkelanalyse")
@@ -2575,24 +2609,84 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
                     )
 
                 def inspect_selected_circle(selection, pairs):
+                    """
+                    Inspect a selected circle: show the plot, the projection explanation plot,
+                    and the full mathematical breakdown.
+                    """
                     if state["model"] is None or not pairs or not selection:
-                        return go.Figure()
+                        return go.Figure(), go.Figure(), "*No circle selected.*"
 
                     # Parse index from selection string
                     try:
                         idx = int(selection.split(":")[0])
                     except (ValueError, IndexError):
-                        return go.Figure()
+                        return go.Figure(), go.Figure(), "*Invalid selection.*"
 
                     if idx >= len(pairs):
-                        return go.Figure()
+                        return go.Figure(), go.Figure(), "*Index out of range.*"
 
-                    return make_auto_circle_plot(state["model"], pairs[idx])
+                    pair = pairs[idx]
+                    
+                    # 1. The circle plot itself
+                    circle_fig = make_auto_circle_plot(state["model"], pair)
+                    
+                    # 2. The educational 4-panel explanation plot
+                    explanation_fig = make_projection_explanation_plot(state["model"], pair)
+                    
+                    # 3. The full markdown equation breakdown
+                    equation_md = make_projection_equation_markdown(state["model"], pair)
+                    
+                    return circle_fig, explanation_fig, equation_md
 
                 def show_embed_circle(dim_x, dim_y):
+                    """Show raw embedding dimensions with a clear warning about what this is."""
                     if state["model"] is None:
                         return go.Figure()
-                    return make_embedding_circle_plot(state["model"], int(dim_x), int(dim_y))
+                    
+                    model = state["model"]
+                    P = model.P
+                    d_model = model.d_model
+                    dim_x, dim_y = int(dim_x), int(dim_y)
+                    
+                    fig = make_embedding_circle_plot(model, dim_x, dim_y)
+                    
+                    # Compute circularity score for this raw pair
+                    W_E = model.embed.weight[:P].detach().cpu().numpy()
+                    x_coords = W_E[:, dim_x]
+                    y_coords = W_E[:, dim_y]
+                    cx, cy = x_coords.mean(), y_coords.mean()
+                    radii = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
+                    mean_r = radii.mean()
+                    circularity = 1.0 - (radii.std() / (mean_r + 1e-10)) if mean_r > 1e-10 else 0.0
+                    
+                    # Update title with warning
+                    fig.update_layout(
+                        title=(
+                            f"⚠️ RAW Dimensions {dim_x} vs {dim_y} — Circularity: {circularity:.4f}<br>"
+                            f"<sub>This plots W_E[t, {dim_x}] vs W_E[t, {dim_y}] — just 2 of {d_model} dims. "
+                            f"The circle lives in a different 2D subspace (use Auto-Find above).</sub>"
+                        ),
+                    )
+                    
+                    # Add text annotation explaining
+                    fig.add_annotation(
+                        text=(
+                            f"This is NOT a Fourier projection.<br>"
+                            f"x = W_E[t, {dim_x}] (one scalar)<br>"
+                            f"y = W_E[t, {dim_y}] (one scalar)<br>"
+                            f"Circularity: {circularity:.4f}<br>"
+                            f"(Auto-circles typically score >0.95)"
+                        ),
+                        xref="paper", yref="paper",
+                        x=0.02, y=0.98,
+                        showarrow=False,
+                        font=dict(size=10, color="red"),
+                        bgcolor="rgba(255,255,200,0.9)",
+                        bordercolor="red",
+                        borderwidth=1,
+                    )
+                    
+                    return fig
 
                 def show_embed_alldims(token_id):
                     if state["model"] is None:
@@ -2928,6 +3022,583 @@ def rename_run(old_id: str, new_id: str) -> bool:
                 json.dump(meta, f, indent=2)
         return True
     return False
+
+def make_projection_explanation_plot(model: ModularAdditionTransformer,
+                                      pair_info: dict) -> go.Figure:
+    """
+    Create an educational plot that shows EXACTLY what a circle projection is doing.
+
+    Shows:
+    - The projection equation with real coefficient values
+    - A side-by-side: raw dims vs projected coords
+    - The projection vectors themselves (what directions in 128D space we're projecting onto)
+
+    This makes it crystal clear WHY auto-circles look different from raw dimension plots.
+
+    === THE MATH ===
+
+    For a Fourier projection at frequency k:
+
+        x_i = (W_E[i, :] · cos_direction) / ||cos_direction||²
+        y_i = (W_E[i, :] · sin_direction) / ||sin_direction||²
+
+    where:
+        cos_direction[d] = Σ_t cos(2πkt/P) · W_E[t, d]   (the "cos_k" row of Fourier-transformed W_E)
+        sin_direction[d] = Σ_t sin(2πkt/P) · W_E[t, d]   (the "sin_k" row of Fourier-transformed W_E)
+
+    So each x_i is a WEIGHTED SUM of ALL 128 dimensions of token i's embedding,
+    where the weights come from the Fourier basis projected through W_E.
+
+    For PCA:
+        x_i = U[i, pc_x] * S[pc_x]    (i-th token's score on principal component pc_x)
+        y_i = U[i, pc_y] * S[pc_y]
+
+    Each PC is itself a linear combination of all d_model dimensions:
+        PC_j = V[j, :]  (a unit vector in R^d_model)
+        x_i = (W_E[i, :] - mean) · V[pc_x, :]
+
+    For raw dimensions:
+        x_i = W_E[i, dim_x]    (just one number from the embedding vector)
+        y_i = W_E[i, dim_y]    (just one number)
+    """
+    P = model.P
+    d_model = model.d_model
+    W_E = model.embed.weight[:P].detach().cpu().numpy()  # (P, d_model)
+
+    method = pair_info["method"]
+
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=(
+            f"Circle Plot ({method} projection)",
+            "Projection Vector Weights (what dims contribute)",
+            "Raw Dims 0 vs 1 (for comparison — NOT a circle)",
+            "How x-coordinate is computed (one token example)",
+        ),
+        vertical_spacing=0.15,
+        horizontal_spacing=0.1,
+    )
+
+    x_coords = pair_info["x_coords"]
+    y_coords = pair_info["y_coords"]
+    color_values = np.arange(P) / P
+
+    # === Panel 1: The actual circle ===
+    fig.add_trace(go.Scatter(
+        x=x_coords, y=y_coords,
+        mode="markers",
+        marker=dict(size=6, color=color_values, colorscale=CYCLIC_BLUE_GREEN, showscale=False),
+        text=[str(i) for i in range(P)],
+        hovertemplate="Token %{text}: (%{x:.3f}, %{y:.3f})<extra></extra>",
+        name="Projected (circle)",
+    ), row=1, col=1)
+
+    # Fitted circle overlay
+    cx, cy = x_coords.mean(), y_coords.mean()
+    radii = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
+    avg_r = radii.mean()
+    theta = np.linspace(0, 2*np.pi, 100)
+    fig.add_trace(go.Scatter(
+        x=cx + avg_r * np.cos(theta), y=cy + avg_r * np.sin(theta),
+        mode="lines", line=dict(color="rgba(255,0,0,0.3)", dash="dash"),
+        showlegend=False, hoverinfo="skip",
+    ), row=1, col=1)
+
+    # === Panel 2: Projection vector weights ===
+    if method == "fourier":
+        # Show the actual cos_direction and sin_direction vectors
+        k = pair_info.get("frequency", 1)
+
+        # Reconstruct the Fourier basis vectors
+        fourier_basis = np.zeros((P, P))
+        fourier_basis[0] = np.ones(P) / np.sqrt(P)
+        for freq in range(1, P // 2 + 1):
+            fourier_basis[2*freq - 1] = np.cos(2 * np.pi * freq * np.arange(P) / P) * np.sqrt(2/P)
+            if 2*freq < P:
+                fourier_basis[2*freq] = np.sin(2 * np.pi * freq * np.arange(P) / P) * np.sqrt(2/P)
+
+        W_E_fourier = fourier_basis @ W_E  # (P, d_model)
+        cos_direction = W_E_fourier[2*k - 1]  # (d_model,)
+        sin_direction = W_E_fourier[2*k] if 2*k < P else np.zeros(d_model)
+
+        # Show top contributing dimensions
+        fig.add_trace(go.Bar(
+            x=list(range(d_model)), y=cos_direction,
+            name=f"cos_{k} direction",
+            marker_color="blue", opacity=0.7,
+            hovertemplate="Dim %{x}: weight=%{y:.4f}<extra>cos direction</extra>",
+        ), row=1, col=2)
+        fig.add_trace(go.Bar(
+            x=list(range(d_model)), y=sin_direction,
+            name=f"sin_{k} direction",
+            marker_color="orange", opacity=0.7,
+            hovertemplate="Dim %{x}: weight=%{y:.4f}<extra>sin direction</extra>",
+        ), row=1, col=2)
+
+    elif method == "pca":
+        from scipy.linalg import svd
+        W_centered = W_E - W_E.mean(axis=0, keepdims=True)
+        U, S, Vt = svd(W_centered, full_matrices=False)
+
+        pc_i = pair_info.get("pc_i", 0)
+        pc_j = pair_info.get("pc_j", 1)
+
+        # The PC directions in embedding space
+        fig.add_trace(go.Bar(
+            x=list(range(d_model)), y=Vt[pc_i],
+            name=f"PC_{pc_i} direction (σ={S[pc_i]:.2f})",
+            marker_color="blue", opacity=0.7,
+            hovertemplate="Dim %{x}: weight=%{y:.4f}<extra>PC_x direction</extra>",
+        ), row=1, col=2)
+        fig.add_trace(go.Bar(
+            x=list(range(d_model)), y=Vt[pc_j],
+            name=f"PC_{pc_j} direction (σ={S[pc_j]:.2f})",
+            marker_color="orange", opacity=0.7,
+            hovertemplate="Dim %{x}: weight=%{y:.4f}<extra>PC_y direction</extra>",
+        ), row=1, col=2)
+
+    elif method == "raw":
+        dim_x = pair_info["dim_x"]
+        dim_y = pair_info["dim_y"]
+        # For raw: the "projection vector" is just a one-hot
+        proj_x = np.zeros(d_model)
+        proj_x[dim_x] = 1.0
+        proj_y = np.zeros(d_model)
+        proj_y[dim_y] = 1.0
+
+        fig.add_trace(go.Bar(
+            x=list(range(d_model)), y=proj_x,
+            name=f"x-axis = dim {dim_x} (one-hot)",
+            marker_color="blue",
+        ), row=1, col=2)
+        fig.add_trace(go.Bar(
+            x=list(range(d_model)), y=proj_y,
+            name=f"y-axis = dim {dim_y} (one-hot)",
+            marker_color="orange",
+        ), row=1, col=2)
+
+    # === Panel 3: Raw dims 0 vs 1 for comparison (usually NOT a circle) ===
+    raw_x = W_E[:, 0]
+    raw_y = W_E[:, 1]
+    fig.add_trace(go.Scatter(
+        x=raw_x, y=raw_y,
+        mode="markers",
+        marker=dict(size=5, color=color_values, colorscale=CYCLIC_BLUE_GREEN, showscale=False),
+        text=[str(i) for i in range(P)],
+        hovertemplate="Token %{text}: (dim0=%{x:.3f}, dim1=%{y:.3f})<extra></extra>",
+        name="Raw dims (0,1)",
+    ), row=2, col=1)
+
+    # === Panel 4: Show computation for ONE example token ===
+    example_token = 5  # Pick token 5 as example
+    token_embedding = W_E[example_token]  # (d_model,)
+
+    if method == "fourier":
+        k = pair_info.get("frequency", 1)
+        # x_coord = token_embedding · cos_direction / ||cos_direction||²
+        dot_product = token_embedding * cos_direction  # element-wise contribution
+        norm_sq = np.linalg.norm(cos_direction)**2
+
+        # Show per-dimension contribution to the dot product
+        fig.add_trace(go.Bar(
+            x=list(range(d_model)),
+            y=dot_product,
+            name=f"Token {example_token}: W_E[{example_token},d] × cos_dir[d]",
+            marker_color=["red" if v < 0 else "green" for v in dot_product],
+            hovertemplate=(
+                f"Dim %{{x}}: W_E[{example_token},%{{x}}]=%{{customdata[0]:.4f}} × "
+                f"cos_dir[%{{x}}]=%{{customdata[1]:.4f}} = %{{y:.4f}}<extra></extra>"
+            ),
+            customdata=np.stack([token_embedding, cos_direction], axis=-1),
+        ), row=2, col=2)
+
+        # Add annotation showing the final sum
+        total = dot_product.sum() / (norm_sq + 1e-10)
+        fig.add_annotation(
+            text=(
+                f"x_{example_token} = Σ(W_E[{example_token},d] × cos_dir[d]) / ||cos_dir||²<br>"
+                f"= {dot_product.sum():.4f} / {norm_sq:.4f} = <b>{total:.4f}</b>"
+            ),
+            xref="x4", yref="y4",
+            x=d_model * 0.5, y=max(abs(dot_product)) * 0.8,
+            showarrow=False, font=dict(size=10),
+            bgcolor="rgba(255,255,255,0.8)",
+        )
+
+    elif method == "pca":
+        pc_i = pair_info.get("pc_i", 0)
+        W_centered = W_E - W_E.mean(axis=0, keepdims=True)
+        from scipy.linalg import svd
+        U, S, Vt = svd(W_centered, full_matrices=False)
+
+        # x_coord = (W_E[token] - mean) · V[pc_i] * S[pc_i]
+        centered_token = W_centered[example_token]
+        contributions = centered_token * Vt[pc_i]
+
+        fig.add_trace(go.Bar(
+            x=list(range(d_model)),
+            y=contributions,
+            name=f"Token {example_token}: (W_E[{example_token},d]-μ[d]) × PC_{pc_i}[d]",
+            marker_color=["red" if v < 0 else "green" for v in contributions],
+            hovertemplate=(
+                f"Dim %{{x}}: centered[%{{x}}]=%{{customdata[0]:.4f}} × "
+                f"PC_{pc_i}[%{{x}}]=%{{customdata[1]:.4f}} = %{{y:.4f}}<extra></extra>"
+            ),
+            customdata=np.stack([centered_token, Vt[pc_i]], axis=-1),
+        ), row=2, col=2)
+
+        total = contributions.sum() * S[pc_i]
+        fig.add_annotation(
+            text=(
+                f"x_{example_token} = [Σ(centered[d] × PC_{pc_i}[d])] × σ_{pc_i}<br>"
+                f"= {contributions.sum():.4f} × {S[pc_i]:.4f} = <b>{total:.4f}</b>"
+            ),
+            xref="x4", yref="y4",
+            x=d_model * 0.5, y=max(abs(contributions)) * 0.8,
+            showarrow=False, font=dict(size=10),
+            bgcolor="rgba(255,255,255,0.8)",
+        )
+
+    elif method == "raw":
+        dim_x = pair_info["dim_x"]
+        # For raw: just show the single dimension value
+        fig.add_trace(go.Bar(
+            x=list(range(d_model)),
+            y=np.where(np.arange(d_model) == dim_x, token_embedding, 0),
+            name=f"Token {example_token}: only dim {dim_x} used",
+            marker_color="green",
+        ), row=2, col=2)
+
+        fig.add_annotation(
+            text=f"x_{example_token} = W_E[{example_token}, {dim_x}] = <b>{token_embedding[dim_x]:.4f}</b><br>(just one dimension, no projection)",
+            xref="x4", yref="y4",
+            x=d_model * 0.5, y=token_embedding[dim_x] * 0.8,
+            showarrow=False, font=dict(size=10),
+            bgcolor="rgba(255,255,255,0.8)",
+        )
+
+    # Layout
+    fig.update_layout(
+        height=900,
+        width=1100,
+        title_text=(
+            f"How This Circle Is Computed — Method: {method.upper()}<br>"
+            f"<sub>Left: the circle you see | Right: the projection weights across all {d_model} dims | "
+            f"Bottom-left: raw dims (NOT a circle) | Bottom-right: per-dim computation for token {example_token}</sub>"
+        ),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.15),
+    )
+
+    fig.update_xaxes(title_text="Dimension index", row=1, col=2)
+    fig.update_xaxes(title_text=f"Raw Dim 0", row=2, col=1)
+    fig.update_xaxes(title_text="Dimension index", row=2, col=2)
+    fig.update_yaxes(title_text="Projection weight", row=1, col=2)
+
+    return fig
+
+def make_projection_equation_markdown(model: ModularAdditionTransformer,
+                                       pair_info: dict) -> str:
+    """
+    Generate a detailed Markdown explanation of exactly what math produces
+    the circle coordinates, with REAL numbers from the actual model weights.
+
+    This is the "show your work" function that makes it impossible to be confused
+    about what the auto-circle plot is showing.
+    """
+    P = model.P
+    d_model = model.d_model
+    W_E = model.embed.weight[:P].detach().cpu().numpy()
+    method = pair_info["method"]
+
+    md = f"## 🔍 Projection Explanation: `{method}` method\n\n"
+    md += f"**Model:** P={P}, d_model={d_model}\n\n"
+    md += "---\n\n"
+
+    if method == "fourier":
+        k = pair_info.get("frequency", 1)
+
+        # Reconstruct the actual projection vectors
+        fourier_basis = np.zeros((P, P))
+        fourier_basis[0] = np.ones(P) / np.sqrt(P)
+        for freq in range(1, P // 2 + 1):
+            fourier_basis[2*freq - 1] = np.cos(2 * np.pi * freq * np.arange(P) / P) * np.sqrt(2/P)
+            if 2*freq < P:
+                fourier_basis[2*freq] = np.sin(2 * np.pi * freq * np.arange(P) / P) * np.sqrt(2/P)
+
+        W_E_fourier = fourier_basis @ W_E
+        cos_direction = W_E_fourier[2*k - 1]
+        sin_direction = W_E_fourier[2*k] if 2*k < P else np.zeros(d_model)
+
+        cos_norm_sq = np.linalg.norm(cos_direction)**2
+        sin_norm_sq = np.linalg.norm(sin_direction)**2
+
+        # Find top contributing dimensions
+        top_cos_dims = np.argsort(np.abs(cos_direction))[-5:][::-1]
+        top_sin_dims = np.argsort(np.abs(sin_direction))[-5:][::-1]
+
+        md += f"### Method: Fourier Projection (frequency k={k})\n\n"
+        md += "#### What the axes represent\n\n"
+        md += "The x and y coordinates are **NOT** raw embedding dimensions. They are:\n\n"
+        md += "$$x_t = \\frac{\\mathbf{e}_t \\cdot \\mathbf{c}_k}{\\|\\mathbf{c}_k\\|^2}$$\n\n"
+        md += "$$y_t = \\frac{\\mathbf{e}_t \\cdot \\mathbf{s}_k}{\\|\\mathbf{s}_k\\|^2}$$\n\n"
+        md += "where:\n"
+        md += f"- $\\mathbf{{e}}_t = W_E[t, :] \\in \\mathbb{{R}}^{{{d_model}}}$ is token $t$'s full embedding vector\n"
+        md += f"- $\\mathbf{{c}}_k \\in \\mathbb{{R}}^{{{d_model}}}$ is the \"cosine-{k} direction\" in embedding space\n"
+        md += f"- $\\mathbf{{s}}_k \\in \\mathbb{{R}}^{{{d_model}}}$ is the \"sine-{k} direction\" in embedding space\n\n"
+
+        md += "#### How the direction vectors are computed\n\n"
+        md += "$$\\mathbf{c}_k[d] = \\sum_{t=0}^{P-1} \\cos\\!\\left(\\frac{2\\pi k t}{P}\\right) \\cdot W_E[t, d] \\cdot \\sqrt{\\frac{2}{P}}$$\n\n"
+        md += "In words: for each embedding dimension $d$, we compute how much that dimension\n"
+        md += f"correlates with $\\cos(2\\pi \\cdot {k} \\cdot t / {P})$ across all {P} tokens.\n\n"
+
+        md += "#### Real values from this model\n\n"
+        md += f"- $\\|\\mathbf{{c}}_{{{k}}}\\|^2 = {cos_norm_sq:.4f}$\n"
+        md += f"- $\\|\\mathbf{{s}}_{{{k}}}\\|^2 = {sin_norm_sq:.4f}$\n\n"
+
+        md += f"**Top 5 dimensions contributing to $\\mathbf{{c}}_{{{k}}}$:**\n\n"
+        md += "| Dim | Weight | |Weight| |\n|-----|--------|--------|\n"
+        for d in top_cos_dims:
+            md += f"| {d} | {cos_direction[d]:.4f} | {abs(cos_direction[d]):.4f} |\n"
+
+        md += f"\n**Top 5 dimensions contributing to $\\mathbf{{s}}_{{{k}}}$:**\n\n"
+        md += "| Dim | Weight | |Weight| |\n|-----|--------|--------|\n"
+        for d in top_sin_dims:
+            md += f"| {d} | {sin_direction[d]:.4f} | {abs(sin_direction[d]):.4f} |\n"
+
+        md += "\n#### Worked example: Token t=5\n\n"
+        e5 = W_E[5]
+        x5 = np.dot(e5, cos_direction) / (cos_norm_sq + 1e-10)
+        y5 = np.dot(e5, sin_direction) / (sin_norm_sq + 1e-10)
+
+        md += f"$$x_5 = \\frac{{\\mathbf{{e}}_5 \\cdot \\mathbf{{c}}_{{{k}}}}}{{\\|\\mathbf{{c}}_{{{k}}}\\|^2}} = \\frac{{{np.dot(e5, cos_direction):.4f}}}{{{cos_norm_sq:.4f}}} = {x5:.4f}$$\n\n"
+        md += f"$$y_5 = \\frac{{\\mathbf{{e}}_5 \\cdot \\mathbf{{s}}_{{{k}}}}}{{\\|\\mathbf{{s}}_{{{k}}}\\|^2}} = \\frac{{{np.dot(e5, sin_direction):.4f}}}{{{sin_norm_sq:.4f}}} = {y5:.4f}$$\n\n"
+
+        # Show why it's a circle
+        expected_angle = 2 * np.pi * k * 5 / P
+        md += f"#### Why it's a circle\n\n"
+        md += f"If the model perfectly learned the Fourier representation, then:\n\n"
+        md += f"$$x_t \\approx A \\cos\\!\\left(\\frac{{2\\pi \\cdot {k} \\cdot t}}{{{P}}}\\right), \\quad y_t \\approx A \\sin\\!\\left(\\frac{{2\\pi \\cdot {k} \\cdot t}}{{{P}}}\\right)$$\n\n"
+        md += f"For token 5: expected angle = $2\\pi \\cdot {k} \\cdot 5 / {P} = {expected_angle:.4f}$ rad = {np.degrees(expected_angle):.1f}°\n\n"
+        md += f"Actual angle from data: {np.degrees(np.arctan2(y5, x5)):.1f}°\n\n"
+
+        md += "#### Why raw dimensions DON'T show circles\n\n"
+        md += f"A single raw dimension (e.g., `W_E[t, 0]`) contains contributions from **all** frequencies mixed together:\n\n"
+        md += f"$$W_E[t, 0] = \\sum_{{k'=0}}^{{{P//2}}} \\left[ \\alpha_{{k',0}} \\cos(\\omega_{{k'}} t) + \\beta_{{k',0}} \\sin(\\omega_{{k'}} t) \\right]$$\n\n"
+        md += f"This superposition of many frequencies destroys the clean circular pattern.\n"
+        md += f"The Fourier projection **isolates** frequency {k} by projecting out all others.\n\n"
+
+    elif method == "pca":
+        from scipy.linalg import svd
+        W_centered = W_E - W_E.mean(axis=0, keepdims=True)
+        U, S, Vt = svd(W_centered, full_matrices=False)
+
+        pc_i = pair_info.get("pc_i", 0)
+        pc_j = pair_info.get("pc_j", 1)
+
+        md += f"### Method: PCA (Principal Components {pc_i} and {pc_j})\n\n"
+        md += "#### What the axes represent\n\n"
+        md += f"$$x_t = (\\mathbf{{e}}_t - \\bar{{\\mathbf{{e}}}}) \\cdot \\mathbf{{v}}_{{{pc_i}}} \\times \\sigma_{{{pc_i}}}$$\n\n"
+        md += f"$$y_t = (\\mathbf{{e}}_t - \\bar{{\\mathbf{{e}}}}) \\cdot \\mathbf{{v}}_{{{pc_j}}} \\times \\sigma_{{{pc_j}}}$$\n\n"
+        md += "where:\n"
+        md += f"- $\\bar{{\\mathbf{{e}}}} \\in \\mathbb{{R}}^{{{d_model}}}$ is the mean embedding across all {P} tokens\n"
+        md += f"- $\\mathbf{{v}}_{{{pc_i}}} \\in \\mathbb{{R}}^{{{d_model}}}$ is the {pc_i}-th right singular vector of centered $W_E$\n"
+        md += f"- $\\sigma_{{{pc_i}}} = {S[pc_i]:.4f}$ is the {pc_i}-th singular value\n"
+        md += f"- $\\sigma_{{{pc_j}}} = {S[pc_j]:.4f}$ is the {pc_j}-th singular value\n\n"
+
+        md += f"Each PC is a **linear combination of all {d_model} dimensions**.\n\n"
+
+        # Top contributing dims for each PC
+        top_dims_i = np.argsort(np.abs(Vt[pc_i]))[-5:][::-1]
+        top_dims_j = np.argsort(np.abs(Vt[pc_j]))[-5:][::-1]
+
+        md += f"**Top 5 dims in PC_{pc_i}:**\n\n"
+        md += "| Dim | Weight |\n|-----|--------|\n"
+        for d in top_dims_i:
+            md += f"| {d} | {Vt[pc_i][d]:.4f} |\n"
+
+        md += f"\n**Top 5 dims in PC_{pc_j}:**\n\n"
+        md += "| Dim | Weight |\n|-----|--------|\n"
+        for d in top_dims_j:
+            md += f"| {d} | {Vt[pc_j][d]:.4f} |\n"
+
+        md += "\n#### Worked example: Token t=5\n\n"
+        centered_5 = W_centered[5]
+        x5 = np.dot(centered_5, Vt[pc_i]) * S[pc_i]
+        y5 = np.dot(centered_5, Vt[pc_j]) * S[pc_j]
+        md += f"$$x_5 = (\\mathbf{{e}}_5 - \\bar{{\\mathbf{{e}}}}) \\cdot \\mathbf{{v}}_{{{pc_i}}} \\times {S[pc_i]:.4f} = {np.dot(centered_5, Vt[pc_i]):.4f} \\times {S[pc_i]:.4f} = {x5:.4f}$$\n\n"
+        md += f"$$y_5 = (\\mathbf{{e}}_5 - \\bar{{\\mathbf{{e}}}}) \\cdot \\mathbf{{v}}_{{{pc_j}}} \\times {S[pc_j]:.4f} = {np.dot(centered_5, Vt[pc_j]):.4f} \\times {S[pc_j]:.4f} = {y5:.4f}$$\n\n"
+
+        md += "#### Why PCA finds circles\n\n"
+        md += "If the embedding encodes tokens on a circle at frequency $k$, then the two\n"
+        md += "largest-variance directions will align with $\\cos(\\omega_k t)$ and $\\sin(\\omega_k t)$.\n"
+        md += "PCA finds these as the top principal components because they explain the most variance.\n\n"
+
+    elif method == "raw":
+        dim_x = pair_info["dim_x"]
+        dim_y = pair_info["dim_y"]
+
+        md += f"### Method: Raw Dimension Pair ({dim_x}, {dim_y})\n\n"
+        md += "#### What the axes represent\n\n"
+        md += f"$$x_t = W_E[t, {dim_x}] \\quad \\text{{(just one scalar from the embedding)}}$$\n\n"
+        md += f"$$y_t = W_E[t, {dim_y}] \\quad \\text{{(just one scalar from the embedding)}}$$\n\n"
+        md += "This is the **simplest** case — no projection, no weighted sum.\n"
+        md += f"You're literally plotting column {dim_x} vs column {dim_y} of the {P}×{d_model} embedding matrix.\n\n"
+        md += "#### Why this is rare\n\n"
+        md += f"Out of $\\binom{{{d_model}}}{{2}} = {d_model*(d_model-1)//2}$ possible dimension pairs, "
+        md += "very few will show circular structure because the circle lives in an **arbitrary** "
+        md += "2D subspace that is generally not axis-aligned.\n\n"
+
+        md += f"#### Real values: Token 5\n\n"
+        md += f"$$x_5 = W_E[5, {dim_x}] = {W_E[5, dim_x]:.6f}$$\n\n"
+        md += f"$$y_5 = W_E[5, {dim_y}] = {W_E[5, dim_y]:.6f}$$\n\n"
+        
+        md += "#### Why this pair shows a circle (if it does)\n\n"
+        md += f"This is one of the rare cases where the circular structure happens to be\n"
+        md += f"partially aligned with these two coordinate axes. The circularity score\n"
+        md += f"is {pair_info['circularity_score']:.4f} (1.0 = perfect circle).\n\n"
+        md += f"Most of the {d_model*(d_model-1)//2} possible raw pairs will NOT show circles.\n"
+    
+    # === Common footer: comparison table ===
+    md += "\n---\n\n"
+    md += "## Summary: Why Auto-Circles ≠ Raw Dimensions\n\n"
+    md += "| | Auto-Circle (Fourier/PCA) | Raw Dimension Pair |\n"
+    md += "|---|---|---|\n"
+    md += f"| **x-coordinate** | Weighted sum of ALL {d_model} dims | Just 1 dim (e.g., `W_E[t, 5]`) |\n"
+    md += f"| **# dims used** | {d_model} | 1 |\n"
+    md += "| **Isolates frequency?** | Yes (by design) | No (all freqs mixed) |\n"
+    md += "| **Looks like circle?** | Almost always | Almost never |\n"
+    md += "| **Math** | $x_t = \\mathbf{e}_t \\cdot \\mathbf{v}$ (dot product) | $x_t = W_E[t, d]$ (single entry) |\n\n"
+    
+    md += "### Analogy\n\n"
+    md += "Imagine a 3D helix (spiral staircase). Looking at it from above (a specific 2D projection), "
+    md += "you see a perfect circle. But if you just plot the x-coordinate vs the z-coordinate "
+    md += "(two raw axes), you see a sine wave, not a circle. The Fourier/PCA projections are like "
+    md += "choosing the right viewing angle to see the circle.\n"
+    
+    return md
+
+def make_raw_vs_projected_comparison(model: ModularAdditionTransformer,
+                                      pair_info: dict,
+                                      raw_dim_x: int = 0,
+                                      raw_dim_y: int = 1) -> go.Figure:
+    """
+    Side-by-side comparison: the SAME tokens plotted in
+    (1) the auto-discovered projection (circle), and
+    (2) raw embedding dimensions (usually random scatter).
+    
+    This makes it viscerally obvious that the difference is purely
+    about WHICH 2D subspace you're looking at.
+    
+    === Key Insight ===
+    
+    Both plots show the SAME P points (one per token).
+    Both plots use the SAME underlying data (the P × d_model embedding matrix).
+    The ONLY difference is the 2D subspace we project onto:
+    
+    Auto-circle:  x_t = W_E[t, :] · v_x    (dot product with learned direction)
+                  y_t = W_E[t, :] · v_y    (dot product with another direction)
+    
+    Raw dims:     x_t = W_E[t, dim_x]      (just one entry)
+                  y_t = W_E[t, dim_y]      (just one entry)
+    
+    The first is like looking at a helix from above (you see a circle).
+    The second is like looking at it from a random angle (you see noise).
+    """
+    P = model.P
+    d_model = model.d_model
+    W_E = model.embed.weight[:P].detach().cpu().numpy()
+    
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=(
+            f"Auto-Discovered Projection ({pair_info['method']})",
+            f"Raw Dimensions ({raw_dim_x} vs {raw_dim_y})",
+        ),
+        horizontal_spacing=0.1,
+    )
+    
+    color_values = np.arange(P) / P
+    
+    # Left: the circle (projected)
+    x_proj = pair_info["x_coords"]
+    y_proj = pair_info["y_coords"]
+    
+    fig.add_trace(go.Scatter(
+        x=x_proj, y=y_proj,
+        mode="markers",
+        marker=dict(size=6, color=color_values, colorscale=CYCLIC_BLUE_GREEN, showscale=False),
+        text=[str(i) for i in range(P)],
+        hovertemplate="Token %{text}: (%{x:.3f}, %{y:.3f})<extra>PROJECTED</extra>",
+        name="Projected (circle)",
+    ), row=1, col=1)
+    
+    # Fitted circle on left
+    cx, cy = x_proj.mean(), y_proj.mean()
+    radii = np.sqrt((x_proj - cx)**2 + (y_proj - cy)**2)
+    avg_r = radii.mean()
+    theta = np.linspace(0, 2*np.pi, 100)
+    fig.add_trace(go.Scatter(
+        x=cx + avg_r * np.cos(theta), y=cy + avg_r * np.sin(theta),
+        mode="lines", line=dict(color="rgba(255,0,0,0.3)", dash="dash"),
+        showlegend=False, hoverinfo="skip",
+    ), row=1, col=1)
+    
+    # Right: raw dimensions (usually NOT a circle)
+    x_raw = W_E[:, raw_dim_x]
+    y_raw = W_E[:, raw_dim_y]
+    
+    fig.add_trace(go.Scatter(
+        x=x_raw, y=y_raw,
+        mode="markers",
+        marker=dict(size=6, color=color_values, colorscale=CYCLIC_BLUE_GREEN, showscale=False),
+        text=[str(i) for i in range(P)],
+        hovertemplate="Token %{text}: (%{x:.3f}, %{y:.3f})<extra>RAW DIMS</extra>",
+        name=f"Raw dims ({raw_dim_x}, {raw_dim_y})",
+    ), row=1, col=2)
+    
+    # Attempt fitted circle on right (to show it doesn't fit)
+    cx_r, cy_r = x_raw.mean(), y_raw.mean()
+    radii_r = np.sqrt((x_raw - cx_r)**2 + (y_raw - cy_r)**2)
+    avg_r_r = radii_r.mean()
+    fig.add_trace(go.Scatter(
+        x=cx_r + avg_r_r * np.cos(theta), y=cy_r + avg_r_r * np.sin(theta),
+        mode="lines", line=dict(color="rgba(255,0,0,0.3)", dash="dash"),
+        showlegend=False, hoverinfo="skip",
+    ), row=1, col=2)
+    
+    # Compute circularity scores for annotation
+    circ_proj = pair_info["circularity_score"]
+    circ_raw = 1.0 - (radii_r.std() / (radii_r.mean() + 1e-10))
+    
+    fig.update_layout(
+        height=500,
+        width=1000,
+        title_text=(
+            f"Same {P} tokens, same embedding matrix — different 2D subspaces<br>"
+            f"<sub>Left circularity: {circ_proj:.4f} | Right circularity: {circ_raw:.4f} | "
+            f"Both use W_E ∈ ℝ^({P}×{d_model})</sub>"
+        ),
+    )
+    
+    # Add annotations explaining the math
+    fig.add_annotation(
+        text=f"x = W_E[t,:] · v_cos<br>y = W_E[t,:] · v_sin<br>(sum of {d_model} dims)",
+        xref="x1", yref="y1",
+        x=cx, y=cy,
+        showarrow=False, font=dict(size=9),
+        bgcolor="rgba(255,255,255,0.8)",
+    )
+    
+    fig.add_annotation(
+        text=f"x = W_E[t, {raw_dim_x}]<br>y = W_E[t, {raw_dim_y}]<br>(just 1 dim each)",
+        xref="x2", yref="y2",
+        x=cx_r, y=cy_r,
+        showarrow=False, font=dict(size=9),
+        bgcolor="rgba(255,255,255,0.8)",
+    )
+    
+    return fig
 
 # =============================================================================
 # Main Entry Point
