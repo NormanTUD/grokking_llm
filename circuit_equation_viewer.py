@@ -1138,8 +1138,7 @@ def build_equation_viewer_tab(state: dict):
     eq_text_output = gr.Textbox(
         label="Step-by-Step Equations with Variable Substitution",
         lines=40,
-        interactive=False,
-        show_copy_button=True,
+        interactive=False
     )
 
     # Output: Per-frequency detail
