@@ -533,7 +533,8 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
                 rf"\Bigr)"
                 rf"= \underbrace{{{ideal:.6f}}}_{{\ \text{{ideal target}}}}"
                 rf",\quad"
-                rf"\underbrace{{{freq_info['firing']}}}_{{\\text{{fire}}}}"
+                rf"\underbrace{{{freq_info['firing']}}}"
+                r"_{\text{fire}}"
                 rf"/{freq_info['total']}\;\text{{neurons}}"
             )
 
