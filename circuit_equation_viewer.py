@@ -579,6 +579,7 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
 def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) -> str:
     """
     Build final HTML with Temml CDN rendering all LaTeX equations.
+    Uses MutationObserver + retry to handle Gradio's dynamic DOM updates.
     """
     def escape_for_html(s: str) -> str:
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
@@ -609,7 +610,6 @@ def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) 
             </div>
         ''')
 
-    # Generate a unique ID to avoid conflicts if multiple instances exist
     import random
     container_id = f"circuit-equations-{random.randint(10000, 99999)}"
 
@@ -679,14 +679,23 @@ def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) 
 
         <script>
             (function() {{
-                function renderEquations() {{
-                    var container = document.getElementById('{container_id}');
-                    if (!container) return;
+                var CONTAINER_ID = '{container_id}';
+                var MAX_RETRIES = 20;
+                var RETRY_INTERVAL = 150; // ms
 
-                    var mathSpans = container.querySelectorAll('.eq-math');
+                function renderAllMath() {{
+                    var container = document.getElementById(CONTAINER_ID);
+                    if (!container) return false;
+                    if (typeof temml === 'undefined') return false;
+
+                    var mathSpans = container.querySelectorAll('.eq-math[data-tex]');
+                    var rendered = 0;
                     mathSpans.forEach(function(span) {{
+                        // Skip already-rendered spans
+                        if (span.querySelector('math') || span.querySelector('.temml-error')) return;
+
                         var tex = span.getAttribute('data-tex');
-                        if (!tex || span.getAttribute('data-rendered')) return;
+                        if (!tex) return;
 
                         try {{
                             temml.render(tex, span, {{
@@ -695,32 +704,122 @@ def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) 
                                 trust: true,
                                 strict: false
                             }});
-                            span.setAttribute('data-rendered', 'true');
+                            rendered++;
                         }} catch(e) {{
-                            span.innerHTML = '<span class="eq-error">' + tex + '</span>';
-                            console.warn('Temml render error:', e.message, 'for:', tex);
+                            span.innerHTML = '<span class="eq-error">Error: ' + e.message + '<br>' + tex.substring(0, 80) + '...</span>';
+                            console.warn('Temml render error:', e.message, 'for:', tex.substring(0, 100));
                         }}
                     }});
+                    return rendered > 0 || mathSpans.length === 0;
                 }}
 
-                // Try to render immediately if temml is loaded
-                if (typeof temml !== 'undefined') {{
-                    renderEquations();
-                }} else {{
-                    // Load temml and then render
+                function loadTemmlAndRender() {{
+                    // Check if temml is already available
+                    if (typeof temml !== 'undefined') {{
+                        renderAllMath();
+                        return;
+                    }}
+
+                    // Check if script is already being loaded
+                    var existingScript = document.querySelector('script[src*="temml"]');
+                    if (existingScript) {{
+                        // Wait for it to load
+                        existingScript.addEventListener('load', function() {{
+                            renderAllMath();
+                        }});
+                        // Also retry in case event already fired
+                        retryRender(0);
+                        return;
+                    }}
+
+                    // Load temml
                     var script = document.createElement('script');
                     script.src = 'https://cdn.jsdelivr.net/npm/temml@0.10.29/dist/temml.min.js';
                     script.onload = function() {{
-                        renderEquations();
+                        renderAllMath();
+                    }};
+                    script.onerror = function() {{
+                        console.error('Failed to load Temml from CDN');
+                        // Show raw LaTeX as fallback
+                        var container = document.getElementById(CONTAINER_ID);
+                        if (container) {{
+                            container.querySelectorAll('.eq-math[data-tex]').forEach(function(span) {{
+                                if (!span.querySelector('math')) {{
+                                    span.textContent = span.getAttribute('data-tex');
+                                    span.style.fontFamily = 'monospace';
+                                    span.style.fontSize = '0.85em';
+                                }}
+                            }});
+                        }}
                     }};
                     document.head.appendChild(script);
                 }}
+
+                function retryRender(attempt) {{
+                    if (attempt >= MAX_RETRIES) return;
+
+                    setTimeout(function() {{
+                        if (typeof temml !== 'undefined') {{
+                            var success = renderAllMath();
+                            if (!success) {{
+                                retryRender(attempt + 1);
+                            }}
+                        }} else {{
+                            retryRender(attempt + 1);
+                        }}
+                    }}, RETRY_INTERVAL);
+                }}
+
+                // Strategy:
+                // 1. Try to render immediately
+                // 2. If temml not loaded, load it
+                // 3. Retry with increasing delays
+                // 4. Use MutationObserver to catch Gradio DOM swaps
+
+                loadTemmlAndRender();
+                retryRender(0);
+
+                // MutationObserver: re-render if Gradio swaps the DOM
+                var observer = new MutationObserver(function(mutations) {{
+                    var container = document.getElementById(CONTAINER_ID);
+                    if (!container) return;
+
+                    var needsRender = false;
+                    for (var i = 0; i < mutations.length; i++) {{
+                        if (mutations[i].addedNodes.length > 0) {{
+                            needsRender = true;
+                            break;
+                        }}
+                    }}
+
+                    if (needsRender && typeof temml !== 'undefined') {{
+                        renderAllMath();
+                    }}
+                }});
+
+                // Observe the container's parent for changes
+                var container = document.getElementById(CONTAINER_ID);
+                if (container && container.parentNode) {{
+                    observer.observe(container.parentNode, {{
+                        childList: true,
+                        subtree: true
+                    }});
+                }}
+
+                // Final safety net: try again after page is fully loaded
+                if (document.readyState === 'loading') {{
+                    document.addEventListener('DOMContentLoaded', function() {{
+                        loadTemmlAndRender();
+                    }});
+                }}
+                window.addEventListener('load', function() {{
+                    setTimeout(renderAllMath, 500);
+                }});
             }})();
         </script>
     </div>
     '''
     return html
-
 
 # =============================================================================
 # Rewritten: build_equation_viewer_tab — now with Temml equations FIRST
