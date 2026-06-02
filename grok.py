@@ -377,7 +377,7 @@ def make_auto_circle_plot(model: ModularAdditionTransformer,
     freq_str = f" (freq k={pair_info['frequency']})" if pair_info.get("frequency") else ""
 
     fig.update_layout(
-        title=f"{pair_info['description']}<br>Circularity: {circularity:.4f}{freq_str}",
+            title=f"{pair_info['description']}<br>x: {pair_info['dim_x']}, y: {pair_info['dim_y']}<br>Circularity: {circularity:.4f}{freq_str}",
         xaxis_title=pair_info["dim_x"] if isinstance(pair_info["dim_x"], str) else f"Dim {pair_info['dim_x']}",
         yaxis_title=pair_info["dim_y"] if isinstance(pair_info["dim_y"], str) else f"Dim {pair_info['dim_y']}",
         xaxis=dict(scaleanchor="y", scaleratio=1),
