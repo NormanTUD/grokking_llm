@@ -2710,7 +2710,7 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
                 inspect_circle_btn.click(
                     fn=inspect_selected_circle,
                     inputs=[circle_dropdown, discovered_pairs_state],
-                    outputs=[single_circle_plot],
+                    outputs=[single_circle_plot, projection_explanation_plot, projection_equation_md],
                 )
 
                 embed_circle_btn.click(
