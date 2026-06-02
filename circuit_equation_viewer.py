@@ -344,8 +344,23 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
         rf"\mathcal{{K}} & \{{{freq_str}\}} & \text{{Key Fourier frequencies}} \\"
         rf"\omega_k & 2\pi k / {P} & \text{{Angular frequency for mode }}k \\"
         r"\hline"
+        r"W_E & \mathbb{R}^{P \times d_{\text{model}}} & \text{Token embedding matrix} \\"
+        r"W_P & \mathbb{R}^{3 \times d_{\text{model}}} & \text{Positional embedding matrix} \\"
+        r"W_Q, W_K, W_V & \mathbb{R}^{n_h \times d_{\text{model}} \times d_h} & \text{Attention projection matrices} \\"
+        r"W_O & \mathbb{R}^{n_h \times d_h \times d_{\text{model}}} & \text{Attention output projection} \\"
+        r"W_{\text{in}}, b_{\text{in}} & \mathbb{R}^{d_{\text{mlp}} \times d_{\text{model}}} & \text{MLP input projection + bias} \\"
+        r"W_{\text{out}}, b_{\text{out}} & \mathbb{R}^{d_{\text{model}} \times d_{\text{mlp}}} & \text{MLP output projection + bias} \\"
+        r"W_U & \mathbb{R}^{P \times d_{\text{model}}} & \text{Unembedding matrix} \\"
+        r"\hline"
+        r"\mathbf{r}_{\text{mid}} & \mathbb{R}^{d_{\text{model}}} & \text{Residual stream after attention} \\"
+        r"\mathbf{r}_{\text{final}} & \mathbb{R}^{d_{\text{model}}} & \text{Residual stream after MLP} \\"
+        r"z_n & \mathbb{R} & \text{Pre-ReLU activation of neuron } n \\"
+        r"m_n & \mathbb{R} & \text{Post-ReLU activation: } \mathrm{ReLU}(z_n) \\"
+        r"\gamma_n & \mathbb{R} & \text{Neuron-specific gain (from } W_{\text{in}} \text{)} \\"
+        r"\hline"
         r"\end{array}"
     )
+
     sections.append(("Symbol Table & Parameters", [table_latex]))
 
     # ═══ STEP 1: EMBEDDING ═══
