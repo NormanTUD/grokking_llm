@@ -579,71 +579,72 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
 
 def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) -> str:
     """
-    Build final HTML with equations rendered to MathML server-side via temml CLI,
-    with fallback to client-side rendering if Node/temml not available.
+    Build final HTML with equations rendered SERVER-SIDE to MathML via latex2mathml.
+    No JavaScript needed — browsers render MathML natively.
+    Gradio gr.HTML() will display this immediately without script execution issues.
     """
-    import subprocess
-    import shutil
     import random
+
+    try:
+        import latex2mathml.converter
+        has_latex2mathml = True
+    except ImportError:
+        has_latex2mathml = False
 
     container_id = f"circuit-equations-{random.randint(10000, 99999)}"
 
-    def render_latex_to_mathml(tex: str) -> str:
-        """
-        Try to render LaTeX to MathML server-side using temml via Node.js.
-        Falls back to client-side rendering span if not available.
-        """
-        # Try server-side rendering via node + temml
-        node_path = shutil.which("node")
-        if node_path:
-            try:
-                # One-liner node script that renders via temml
-                js_code = f"""
-                try {{
-                    const temml = require('temml');
-                    const result = temml.renderToString({json.dumps(tex)}, {{
-                        displayMode: true,
-                        throwOnError: false,
-                        trust: true
-                    }});
-                    process.stdout.write(result);
-                }} catch(e) {{
-                    // temml not installed as node module, output empty
-                    process.stdout.write('');
-                }}
-                """
-                result = subprocess.run(
-                    [node_path, "-e", js_code],
-                    capture_output=True, text=True, timeout=5,
-                    cwd=os.path.dirname(os.path.abspath(__file__))
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip()
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-                pass
+    def render_latex(tex: str) -> str:
+        """Convert LaTeX to MathML, with progressive simplification on failure."""
+        if not has_latex2mathml:
+            escaped = tex.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return f'<code class="eq-fallback">{escaped}</code>'
 
-        # Fallback: return a span for client-side rendering
-        escaped = tex.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-        return f'<span class="eq-math" data-tex="{escaped}"></span>'
+        # Try full LaTeX first
+        try:
+            return latex2mathml.converter.convert(tex)
+        except Exception:
+            pass
 
-    def escape_for_html(s: str) -> str:
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+        # Simplify: remove unsupported commands
+        import re
+        simplified = tex
+        # Remove \underbrace{X}_{Y} -> X
+        simplified = re.sub(r'\\underbrace\{([^}]*)\}_\{[^}]*\}', r'\1', simplified)
+        # Remove \overbrace{X}^{Y} -> X
+        simplified = re.sub(r'\\overbrace\{([^}]*)\}\^\{[^}]*\}', r'\1', simplified)
+        # Remove \color{...}
+        simplified = re.sub(r'\\color\{[^}]*\}', '', simplified)
+        # Remove \boxed{X} -> X
+        simplified = re.sub(r'\\boxed\{([^}]*)\}', r'\1', simplified)
+        # \text{X} -> \mathrm{X}
+        simplified = simplified.replace(r'\text{', r'\mathrm{')
+        # \; \quad etc -> space
+        simplified = re.sub(r'\\[;,!]|\\quad|\\qquad', ' ', simplified)
+        # \checkmark -> ✓
+        simplified = simplified.replace(r'\checkmark', '✓')
+        # \times -> ×
+        simplified = simplified.replace(r'\times', '×')
+        # \leftarrow -> ←
+        simplified = simplified.replace(r'\leftarrow', '←')
 
-    # Check if server-side rendering works (test with a simple equation)
-    test_render = render_latex_to_mathml(r"x^2")
-    server_side_works = "<math" in test_render
+        try:
+            return latex2mathml.converter.convert(simplified)
+        except Exception:
+            # Final fallback: show raw LaTeX
+            escaped = tex.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return f'<code class="eq-fallback">{escaped}</code>'
 
     equation_blocks = []
 
     # Header
-    header_rendered = render_latex_to_mathml(header_latex)
+    header_rendered = render_latex(header_latex)
     equation_blocks.append(f'<div class="eq-header">{header_rendered}</div>')
 
     # Sections
     for section_title, equations in sections:
         eq_html_items = []
         for eq in equations:
-            rendered = render_latex_to_mathml(eq)
+            rendered = render_latex(eq)
             eq_html_items.append(f'<div class="eq-line">{rendered}</div>')
 
         equation_blocks.append(f'''
@@ -653,98 +654,11 @@ def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) 
             </div>
         ''')
 
-    # Build the client-side fallback script (only needed if server-side failed)
-    client_script = ""
-    if not server_side_works:
-        client_script = f'''
-        <script>
-            (function() {{
-                var CONTAINER_ID = '{container_id}';
-                var MAX_RETRIES = 30;
-                var RETRY_INTERVAL = 200;
-                var retryCount = 0;
-
-                function renderAllMath() {{
-                    if (typeof temml === 'undefined') return false;
-                    var container = document.getElementById(CONTAINER_ID);
-                    if (!container) return false;
-
-                    var mathSpans = container.querySelectorAll('.eq-math[data-tex]');
-                    if (mathSpans.length === 0) return true;
-
-                    var allRendered = true;
-                    mathSpans.forEach(function(span) {{
-                        if (span.querySelector('math')) return;
-                        var tex = span.getAttribute('data-tex');
-                        if (!tex) return;
-                        try {{
-                            temml.render(tex, span, {{
-                                displayMode: true,
-                                throwOnError: false,
-                                trust: true,
-                                strict: false
-                            }});
-                        }} catch(e) {{
-                            span.innerHTML = '<code style="color:#c00;font-size:0.8em">' +
-                                tex.substring(0, 120) + '</code>';
-                            allRendered = false;
-                        }}
-                    }});
-                    return allRendered;
-                }}
-
-                function tryRender() {{
-                    if (renderAllMath()) return;
-                    retryCount++;
-                    if (retryCount < MAX_RETRIES) {{
-                        setTimeout(tryRender, RETRY_INTERVAL);
-                    }}
-                }}
-
-                function ensureTemml() {{
-                    if (typeof temml !== 'undefined') {{
-                        tryRender();
-                        return;
-                    }}
-                    var existing = document.querySelector('script[src*="temml"]');
-                    if (existing) {{
-                        existing.addEventListener('load', tryRender);
-                        setTimeout(tryRender, 500);
-                        return;
-                    }}
-                    var link = document.createElement('link');
-                    link.rel = 'stylesheet';
-                    link.href = 'https://cdn.jsdelivr.net/npm/temml@0.10.29/dist/Temml-Local.css';
-                    document.head.appendChild(link);
-
-                    var script = document.createElement('script');
-                    script.src = 'https://cdn.jsdelivr.net/npm/temml@0.10.29/dist/temml.min.js';
-                    script.onload = tryRender;
-                    document.head.appendChild(script);
-                }}
-
-                // Start immediately
-                ensureTemml();
-
-                // Also observe for Gradio DOM swaps
-                var observer = new MutationObserver(function() {{
-                    retryCount = 0;
-                    setTimeout(tryRender, 100);
-                }});
-                var target = document.getElementById(CONTAINER_ID);
-                if (target && target.parentNode) {{
-                    observer.observe(target.parentNode, {{ childList: true, subtree: false }});
-                }}
-            }})();
-        </script>
-        '''
-
     html = f'''
     <div id="{container_id}">
-        {"" if server_side_works else '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/temml@0.10.29/dist/Temml-Local.css">'}
         <style>
             #{container_id} {{
-                font-family: 'Latin Modern', 'Computer Modern', Georgia, serif;
+                font-family: 'Latin Modern', 'Computer Modern', 'STIX Two Math', Georgia, serif;
                 max-width: 100%;
                 padding: 1.2em;
                 background: #fafbfc;
@@ -784,32 +698,30 @@ def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) 
                 overflow-x: auto;
                 border-radius: 4px;
                 min-height: 1.8em;
-                background: #fafafa;
-                border: 1px solid #f0f0f0;
+                background: #f8f9fa;
+                border: 1px solid #e8e8e8;
             }}
             #{container_id} .eq-line:hover {{
-                background: #f0f4ff;
-                border-color: #d0d8e8;
+                background: #eef2ff;
+                border-color: #c8d4e8;
             }}
             #{container_id} math {{
-                font-size: 1.1em;
+                font-size: 1.15em;
                 color: #1a1a1a;
             }}
-            #{container_id} .eq-math {{
-                display: block;
-                text-align: left;
-                min-height: 1.5em;
-            }}
-            #{container_id} code {{
-                background: #fff3f3;
-                padding: 2px 4px;
+            #{container_id} .eq-fallback {{
+                font-family: 'JetBrains Mono', 'Fira Code', monospace;
+                font-size: 0.85em;
+                color: #333;
+                background: #f0f0f0;
+                padding: 3px 6px;
                 border-radius: 3px;
+                word-break: break-all;
+                white-space: pre-wrap;
             }}
         </style>
 
         {"".join(equation_blocks)}
-
-        {client_script}
     </div>
     '''
     return html
