@@ -144,6 +144,16 @@ from circuit_latex_generator import CircuitLatexGenerator
 
 from modular_addition_transformer import ModularAdditionTransformer
 
+# Zyklische Colorscale: Blau → Grün → Blau (betont Zyklizität)
+CYCLIC_BLUE_GREEN = [
+    [0.0,  "rgb(0, 50, 200)"],     # Blau (Start)
+    [0.25, "rgb(0, 150, 150)"],    # Übergang Blau→Grün
+    [0.5,  "rgb(0, 200, 80)"],     # Grün (Mitte)
+    [0.75, "rgb(0, 150, 150)"],    # Übergang Grün→Blau
+    [1.0,  "rgb(0, 50, 200)"],     # Blau (Ende = Start → zyklisch!)
+]
+
+
 def find_circular_dimension_pairs(model: ModularAdditionTransformer,
                                    key_frequencies: list[int] = None,
                                    top_k_pairs: int = 5) -> list[dict]:
@@ -176,16 +186,14 @@ def find_circular_dimension_pairs(model: ModularAdditionTransformer,
                 fourier_basis[2*k] = np.sin(2 * np.pi * k * np.arange(P) / P) * np.sqrt(2/P)
 
         # Project embedding onto Fourier basis: (P, P) @ (P, d_model) -> (P, d_model)
-        # Each row of W_E_fourier corresponds to a Fourier component
         W_E_fourier = fourier_basis @ W_E  # (P, d_model)
 
         for k in key_frequencies:
             # The cos and sin rows for frequency k
-            cos_row = W_E_fourier[2*k - 1]  # (d_model,) — direction of cos(2πk·t/P)
-            sin_row = W_E_fourier[2*k] if 2*k < P else np.zeros(d_model)  # direction of sin(2πk·t/P)
+            cos_row = W_E_fourier[2*k - 1]  # (d_model,)
+            sin_row = W_E_fourier[2*k] if 2*k < P else np.zeros(d_model)
 
             # Project all token embeddings onto these two directions
-            # This gives us the "natural" 2D plane for frequency k
             x_proj = W_E @ cos_row / (np.linalg.norm(cos_row)**2 + 1e-10)  # (P,)
             y_proj = W_E @ sin_row / (np.linalg.norm(sin_row)**2 + 1e-10)  # (P,)
 
@@ -193,7 +201,7 @@ def find_circular_dimension_pairs(model: ModularAdditionTransformer,
             cx, cy = x_proj.mean(), y_proj.mean()
             radii = np.sqrt((x_proj - cx)**2 + (y_proj - cy)**2)
             mean_r = radii.mean()
-            circularity = 1.0 - (radii.std() / (mean_r + 1e-10))  # 1.0 = perfect circle
+            circularity = 1.0 - (radii.std() / (mean_r + 1e-10))
 
             results.append({
                 "dim_x": f"fourier_cos_{k}",
@@ -207,12 +215,10 @@ def find_circular_dimension_pairs(model: ModularAdditionTransformer,
             })
 
     # === Method 2: PCA on embedding to find top circular planes ===
-    # Use SVD to find principal components, then check pairs for circularity
     from scipy.linalg import svd
     W_centered = W_E - W_E.mean(axis=0, keepdims=True)
     U, S, Vt = svd(W_centered, full_matrices=False)
 
-    # Check top principal component pairs for circularity
     n_components_to_check = min(20, d_model)
 
     pair_scores = []
@@ -228,7 +234,6 @@ def find_circular_dimension_pairs(model: ModularAdditionTransformer,
                 continue
             circularity = 1.0 - (radii.std() / mean_r)
 
-            # Also check if tokens are evenly spaced (angular uniformity)
             angles = np.arctan2(y_proj - cy, x_proj - cx)
             sorted_angles = np.sort(angles)
             angle_diffs = np.diff(sorted_angles)
@@ -241,7 +246,7 @@ def find_circular_dimension_pairs(model: ModularAdditionTransformer,
                 "dim_y": f"PC_{j}",
                 "pc_i": i,
                 "pc_j": j,
-                "frequency": None,  # Unknown — could detect by counting cycles
+                "frequency": None,
                 "circularity_score": float(combined_score),
                 "x_coords": x_proj,
                 "y_coords": y_proj,
@@ -249,18 +254,15 @@ def find_circular_dimension_pairs(model: ModularAdditionTransformer,
                 "method": "pca",
             })
 
-    # Sort by score and take top-k
     pair_scores.sort(key=lambda x: -x["circularity_score"])
     results.extend(pair_scores[:top_k_pairs])
 
     # === Method 3: Raw dimension pairs (fast scan) ===
-    # Only check if d_model is small enough, or sample randomly
     if d_model <= 32:
         raw_pairs = [(i, j) for i in range(d_model) for j in range(i+1, d_model)]
     else:
-        # Sample random pairs + pairs near high-variance dimensions
         variances = W_E.var(axis=0)
-        top_dims = np.argsort(variances)[-20:]  # Top 20 highest-variance dims
+        top_dims = np.argsort(variances)[-20:]
         raw_pairs = [(int(top_dims[i]), int(top_dims[j]))
                      for i in range(len(top_dims)) for j in range(i+1, len(top_dims))]
 
@@ -299,6 +301,7 @@ def make_auto_circle_plot(model: ModularAdditionTransformer,
     """
     Create a circle plot from a pre-computed pair_info dict
     (as returned by find_circular_dimension_pairs).
+    Uses a cyclic blue→green→blue colorscale to emphasize circular ordering.
     """
     P = model.P
     x_coords = pair_info["x_coords"]
@@ -306,13 +309,27 @@ def make_auto_circle_plot(model: ModularAdditionTransformer,
 
     fig = go.Figure()
 
-    # Color by token ID to show ordering
+    # Compute angles relative to center for color mapping (ensures cyclic color follows position on circle)
+    cx, cy = x_coords.mean(), y_coords.mean()
+    angles = np.arctan2(y_coords - cy, x_coords - cx)  # [-pi, pi]
+    # Normalize to [0, 1] for colorscale mapping
+    color_values = (angles + np.pi) / (2 * np.pi)  # [0, 1], cyclic
+
     fig.add_trace(go.Scatter(
         x=x_coords,
         y=y_coords,
         mode="markers+text",
-        marker=dict(size=10, color=np.arange(P), colorscale="hsv", showscale=True,
-                    colorbar=dict(title="Token ID")),
+        marker=dict(
+            size=10,
+            color=color_values,
+            colorscale=CYCLIC_BLUE_GREEN,
+            showscale=True,
+            colorbar=dict(
+                title="Position (zyklisch)",
+                tickvals=[0, 0.25, 0.5, 0.75, 1.0],
+                ticktext=["0°", "90°", "180°", "270°", "360°"],
+            ),
+        ),
         text=[str(i) for i in range(P)],
         textposition="top center",
         textfont=dict(size=7),
@@ -320,13 +337,14 @@ def make_auto_circle_plot(model: ModularAdditionTransformer,
             "Token: %{text}<br>"
             "x: %{x:.4f}<br>"
             "y: %{y:.4f}<br>"
+            "Winkel: %{customdata[0]:.1f}°<br>"
             "<extra></extra>"
         ),
+        customdata=np.stack([np.degrees(angles) % 360], axis=-1),
         name="Tokens",
     ))
 
     # Fit circle
-    cx, cy = x_coords.mean(), y_coords.mean()
     radii = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
     avg_r = radii.mean()
 
@@ -371,7 +389,7 @@ def make_all_circles_summary(model: ModularAdditionTransformer,
                              key_frequencies: list[int] = None) -> go.Figure:
     """
     Create a summary figure showing ALL discovered circles in a grid.
-    This is the "one-click" view that replaces manual dimension hunting.
+    Uses cyclic blue→green→blue colorscale.
     """
     pairs = find_circular_dimension_pairs(model, key_frequencies, top_k_pairs=3)
 
@@ -395,17 +413,21 @@ def make_all_circles_summary(model: ModularAdditionTransformer,
         x_coords = pair["x_coords"]
         y_coords = pair["y_coords"]
 
+        # Compute angle-based color for cyclic mapping
+        cx, cy = x_coords.mean(), y_coords.mean()
+        angles = np.arctan2(y_coords - cy, x_coords - cx)
+        color_values = (angles + np.pi) / (2 * np.pi)
+
         fig.add_trace(go.Scatter(
             x=x_coords, y=y_coords,
             mode="markers",
-            marker=dict(size=4, color=np.arange(P), colorscale="hsv", showscale=False),
+            marker=dict(size=4, color=color_values, colorscale=CYCLIC_BLUE_GREEN, showscale=False),
             hovertemplate="Token %{text}<extra></extra>",
             text=[str(i) for i in range(P)],
             showlegend=False,
         ), row=row, col=col)
 
         # Fitted circle
-        cx, cy = x_coords.mean(), y_coords.mean()
         radii = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
         avg_r = radii.mean()
         theta = np.linspace(0, 2*np.pi, 100)
@@ -426,6 +448,178 @@ def make_all_circles_summary(model: ModularAdditionTransformer,
     return fig
 
 
+# =============================================================================
+# Winkel-Analyse Tool
+# =============================================================================
+
+def compute_circle_angles(model: ModularAdditionTransformer, pair_info: dict) -> tuple:
+    """
+    Berechnet die Winkel aller Tokens auf dem Kreis und gibt zurück:
+    1. Eine Tabelle mit den absoluten Winkeln jedes Tokens
+    2. Eine Tabelle mit den paarweisen Winkeldifferenzen (alle mit allen)
+    3. Eine Plotly-Figur, die die Winkel visuell auf dem Kreis zeigt
+    4. Eine Heatmap der paarweisen Differenzen
+
+    Returns: (angle_table: pd.DataFrame, diff_df: pd.DataFrame, angle_fig: go.Figure, heatmap_fig: go.Figure)
+    """
+    P = model.P
+    x_coords = pair_info["x_coords"]
+    y_coords = pair_info["y_coords"]
+
+    # Mittelpunkt berechnen
+    cx, cy = x_coords.mean(), y_coords.mean()
+
+    # Winkel relativ zum Mittelpunkt (in Grad)
+    angles_rad = np.arctan2(y_coords - cy, x_coords - cx)
+    angles_deg = np.degrees(angles_rad) % 360  # Normalisiere auf [0, 360)
+
+    # === Tabelle 1: Absolute Winkel ===
+    radii = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
+    angle_table = pd.DataFrame({
+        "Token": np.arange(P),
+        "Winkel (°)": np.round(angles_deg, 2),
+        "Winkel (rad)": np.round(angles_rad, 4),
+        "x": np.round(x_coords, 4),
+        "y": np.round(y_coords, 4),
+        "Radius": np.round(radii, 4),
+    })
+
+    # === Tabelle 2: Paarweise Winkeldifferenzen (alle mit allen) ===
+    diff_matrix = np.zeros((P, P))
+    for i in range(P):
+        for j in range(P):
+            diff = (angles_deg[j] - angles_deg[i]) % 360
+            # Normalisiere auf [-180, 180] für kürzesten Winkel
+            if diff > 180:
+                diff -= 360
+            diff_matrix[i, j] = diff
+
+    diff_df = pd.DataFrame(
+        np.round(diff_matrix, 2),
+        index=[f"{i}" for i in range(P)],
+        columns=[f"{j}" for j in range(P)],
+    )
+
+    # === Visualisierung: Winkel auf dem Kreis ===
+    avg_r = radii.mean()
+    fig = go.Figure()
+
+    # Kreis zeichnen
+    theta_circle = np.linspace(0, 2*np.pi, 200)
+    fig.add_trace(go.Scatter(
+        x=cx + avg_r * np.cos(theta_circle),
+        y=cy + avg_r * np.sin(theta_circle),
+        mode="lines",
+        line=dict(color="rgba(200,200,200,0.5)", width=1),
+        showlegend=False,
+        hoverinfo="skip",
+    ))
+
+    # Tokens mit Farbe nach Winkel (zyklisch)
+    color_values = angles_deg / 360.0
+    fig.add_trace(go.Scatter(
+        x=x_coords,
+        y=y_coords,
+        mode="markers+text",
+        marker=dict(
+            size=10,
+            color=color_values,
+            colorscale=CYCLIC_BLUE_GREEN,
+            showscale=True,
+            colorbar=dict(
+                title="Winkel (°)",
+                tickvals=[0, 0.25, 0.5, 0.75, 1.0],
+                ticktext=["0°", "90°", "180°", "270°", "360°"],
+            ),
+        ),
+        text=[str(i) for i in range(P)],
+        textposition="top center",
+        textfont=dict(size=7),
+        hovertemplate=(
+            "Token: %{text}<br>"
+            "Winkel: %{customdata[0]:.1f}°<br>"
+            "Radius: %{customdata[1]:.4f}<br>"
+            "x: %{x:.4f}<br>"
+            "y: %{y:.4f}<br>"
+            "<extra></extra>"
+        ),
+        customdata=np.stack([angles_deg, radii], axis=-1),
+        name="Tokens",
+    ))
+
+    # Winkellinien vom Mittelpunkt zu ausgewählten Tokens
+    step = max(1, P // 12)
+    for i in range(0, P, step):
+        fig.add_trace(go.Scatter(
+            x=[cx, x_coords[i]],
+            y=[cy, y_coords[i]],
+            mode="lines",
+            line=dict(color="rgba(100,100,100,0.3)", width=1),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+        # Winkel-Annotation auf halber Strecke
+        mid_x = cx + 0.55 * (x_coords[i] - cx)
+        mid_y = cy + 0.55 * (y_coords[i] - cy)
+        fig.add_annotation(
+            x=mid_x, y=mid_y,
+            text=f"{angles_deg[i]:.0f}°",
+            showarrow=False,
+            font=dict(size=8, color="gray"),
+        )
+
+    # Winkelbögen zwischen aufeinanderfolgenden markierten Tokens
+    for i in range(0, P, step):
+        j = (i + step) % P
+        angle_start = angles_rad[i]
+        angle_end = angles_rad[j]
+        # Sicherstellen dass wir den kurzen Bogen nehmen
+        diff = (angle_end - angle_start) % (2 * np.pi)
+        if diff > np.pi:
+            diff -= 2 * np.pi
+        arc_angles = np.linspace(angle_start, angle_start + diff, 20)
+        arc_r = avg_r * 0.35  # Innerer Bogen
+        fig.add_trace(go.Scatter(
+            x=cx + arc_r * np.cos(arc_angles),
+            y=cy + arc_r * np.sin(arc_angles),
+            mode="lines",
+            line=dict(color="rgba(255,100,0,0.4)", width=1.5),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+
+    freq_str = f" (Frequenz k={pair_info.get('frequency', '?')})" if pair_info.get("frequency") else ""
+    expected_step = 360.0 / P
+    fig.update_layout(
+        title=(
+            f"Winkelverteilung auf dem Kreis{freq_str}<br>"
+            f"<sub>Erwarteter Winkelschritt: {expected_step:.2f}° pro Token | "
+            f"Mittelpunkt: ({cx:.3f}, {cy:.3f})</sub>"
+        ),
+        xaxis=dict(scaleanchor="y", scaleratio=1),
+        height=700,
+        width=700,
+    )
+
+    # === Heatmap der paarweisen Differenzen ===
+    fig_heatmap = go.Figure(data=go.Heatmap(
+        z=diff_matrix,
+        x=list(range(P)),
+        y=list(range(P)),
+        colorscale="RdBu_r",
+        zmid=0,
+        colorbar=dict(title="Δ Winkel (°)"),
+        hovertemplate="Token %{y} → Token %{x}: %{z:.1f}°<extra></extra>",
+    ))
+    fig_heatmap.update_layout(
+        title=f"Paarweise Winkeldifferenzen (alle {P}×{P} Paare){freq_str}",
+        xaxis_title="Token j",
+        yaxis_title="Token i",
+        height=700,
+        width=750,
+    )
+
+    return angle_table, diff_df, fig, fig_heatmap
 
 # =============================================================================
 # Training with Live Progress
@@ -2147,6 +2341,40 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
 
                 embed_circle_plot = gr.Plot(label="Embedding Circle (2D projection)")
                 embed_alldims_plot = gr.Plot(label="All Embedding Dimensions")
+
+                gr.Markdown("---")
+                gr.Markdown("#### 📐 Winkelanalyse")
+
+                angle_btn = gr.Button("📐 Winkel berechnen", variant="secondary")
+                angle_table_output = gr.Dataframe(label="Absolute Winkel pro Token", interactive=False)
+                angle_diff_table_output = gr.Dataframe(label="Paarweise Winkeldifferenzen (i → j)", interactive=False)
+                angle_visual_plot = gr.Plot(label="Winkelverteilung (visuell)")
+                angle_heatmap_plot = gr.Plot(label="Winkeldifferenz-Heatmap")
+
+                def compute_angles_for_selected(selection, pairs):
+                    if state["model"] is None or not pairs or not selection:
+                        empty = pd.DataFrame({"error": ["Kein Kreis ausgewählt"]})
+                        return empty, empty, go.Figure(), go.Figure()
+                    try:
+                        idx = int(selection.split(":")[0])
+                    except (ValueError, IndexError):
+                        empty = pd.DataFrame({"error": ["Ungültige Auswahl"]})
+                        return empty, empty, go.Figure(), go.Figure()
+                    if idx >= len(pairs):
+                        empty = pd.DataFrame({"error": ["Index außerhalb des Bereichs"]})
+                        return empty, empty, go.Figure(), go.Figure()
+
+                    angle_table, diff_df, angle_fig, heatmap_fig = compute_circle_angles(
+                        state["model"], pairs[idx]
+                    )
+                    return angle_table, diff_df, angle_fig, heatmap_fig
+
+                angle_btn.click(
+                    fn=compute_angles_for_selected,
+                    inputs=[circle_dropdown, discovered_pairs_state],
+                    outputs=[angle_table_output, angle_diff_table_output, angle_visual_plot, angle_heatmap_plot],
+                )
+
 
                 gr.Markdown("---")
                 gr.Markdown("#### Layer Outputs (Live)")
