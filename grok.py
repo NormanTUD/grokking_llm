@@ -915,6 +915,7 @@ def make_ablation_plot(ablation_results: dict) -> go.Figure:
     fig.update_layout(title_text="Ablation Test: Key Frequencies are Necessary & Sufficient", height=400)
 
     return fig
+
 def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0, dim_y: int = 1, show_all_tokens: bool = True) -> go.Figure:
     """
     Plot token embeddings projected onto a chosen pair of dimensions.
