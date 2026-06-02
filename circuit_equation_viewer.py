@@ -310,7 +310,7 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
     """
     Generate HTML with Temml-rendered equations showing the complete
     circuit computation. Shows both abstract form and concrete variable
-    substitution.
+    substitution. All concrete numbers use \\underbrace to show provenance.
     """
     a = trace["input"]["a"]
     b = trace["input"]["b"]
@@ -326,100 +326,131 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
 
     sections = []
 
-    # ─── HEADER ───
-    header_latex = (
-        ""
-    )
-
-    # ─── ARCHITECTURE ───
-    arch_latex = (
-        rf"d_{{\text{{model}}}} = {d_model},\;"
-        rf"n_{{\text{{heads}}}} = {n_heads},\;"
-        rf"d_{{\text{{head}}}} = {d_model // n_heads},\;"
-        rf"d_{{\text{{mlp}}}} = {d_mlp},\;"
-        rf"P = {P}"
-    )
+    # ═══ SYMBOL TABLE (overview of all values) ═══
     freq_str = ", ".join(str(k) for k in key_freqs)
-    freq_latex = rf"\mathcal{{K}} = \{{{freq_str}\}}"
-    sections.append(("Architecture & Key Frequencies", [arch_latex, freq_latex]))
+    table_latex = (
+        r"\begin{array}{|c|c|l|}"
+        r"\hline"
+        r"\textbf{Symbol} & \textbf{Value} & \textbf{Meaning} \\"
+        r"\hline"
+        rf"a & {a} & \text{{First input token}} \\"
+        rf"b & {b} & \text{{Second input token}} \\"
+        rf"P & {P} & \text{{Prime modulus}} \\"
+        rf"(a+b)\bmod P & {correct} & \text{{Target output}} \\"
+        rf"d_{{\text{{model}}}} & {d_model} & \text{{Residual stream width}} \\"
+        rf"n_{{\text{{heads}}}} & {n_heads} & \text{{Number of attention heads}} \\"
+        rf"d_h & {d_model // n_heads} & \text{{Per-head dimension }} (d_{{\text{{model}}}}/n_{{\text{{heads}}}}) \\"
+        rf"d_{{\text{{mlp}}}} & {d_mlp} & \text{{MLP hidden dimension}} \\"
+        rf"\mathcal{{K}} & \{{{freq_str}\}} & \text{{Key Fourier frequencies}} \\"
+        rf"\omega_k & 2\pi k / {P} & \text{{Angular frequency for mode }}k \\"
+        r"\hline"
+        r"\end{array}"
+    )
+    sections.append(("Symbol Table & Parameters", [table_latex]))
 
-    # ─── STEP 1: EMBEDDING ───
+    # ═══ STEP 1: EMBEDDING ═══
     embed_eqs = []
     if show_abstract:
         embed_eqs.append(
-            r"\mathbf{x}_0 = W_E[a] + W_P[0] \in \mathbb{R}^{" + str(d_model) + r"}"
-        )
-        embed_eqs.append(
-            r"\mathbf{x}_1 = W_E[b] + W_P[1] \in \mathbb{R}^{" + str(d_model) + r"}"
-        )
-        embed_eqs.append(
-            r"\mathbf{x}_2 = W_E[\text{=}] + W_P[2] \in \mathbb{R}^{" + str(d_model) + r"}"
+            r"\mathbf{x}_i = W_E[\text{token}_i] + W_P[i]"
+            r"\;\in\;\mathbb{R}^{" + str(d_model) + r"}"
         )
         embed_eqs.append(
             r"W_E[t] \approx \sum_{k \in \mathcal{K}} "
-            r"\left[\alpha_k \cos\!\left(\frac{2\pi k t}{" + str(P) + r"}\right) \mathbf{u}_k^{(\cos)}"
-            r"+ \beta_k \sin\!\left(\frac{2\pi k t}{" + str(P) + r"}\right) \mathbf{u}_k^{(\sin)}\right]"
+            r"\bigl[\alpha_k \cos(\omega_k t)\,\mathbf{u}_k^{(\cos)}"
+            r"+ \beta_k \sin(\omega_k t)\,\mathbf{u}_k^{(\sin)}\bigr]"
         )
 
     if show_concrete:
         x0_norm = trace["steps"][0]["values"]["x0_norm"]
         x1_norm = trace["steps"][0]["values"]["x1_norm"]
         embed_eqs.append(
-            rf"\mathbf{{x}}_0 = W_E[{a}] + W_P[0],\quad \|\mathbf{{x}}_0\| = {x0_norm:.4f}"
+            rf"\mathbf{{x}}_0 = W_E["
+            rf"\underbrace{{{a}}}_{{a}}] + W_P[0]"
+            rf",\quad \|\mathbf{{x}}_0\| = "
+            rf"\underbrace{{{x0_norm:.4f}}}_{{||W_E[{a}]+W_P[0]||}}"
         )
         embed_eqs.append(
-            rf"\mathbf{{x}}_1 = W_E[{b}] + W_P[1],\quad \|\mathbf{{x}}_1\| = {x1_norm:.4f}"
+            rf"\mathbf{{x}}_1 = W_E["
+            rf"\underbrace{{{b}}}_{{b}}] + W_P[1]"
+            rf",\quad \|\mathbf{{x}}_1\| = "
+            rf"\underbrace{{{x1_norm:.4f}}}_{{||W_E[{b}]+W_P[1]||}}"
         )
 
         fourier = trace["steps"][0]["fourier_decomposition"]
         for k in key_freqs:
             f = fourier[k]
+            omega_val = f['omega']
             embed_eqs.append(
-                rf"k={k}:\; \omega_{{{k}}} = \frac{{2\pi \cdot {k}}}{{{P}}} = {f['omega']:.4f}"
-                rf",\; \cos(\omega_{{{k}}} \cdot {a}) = {f['cos_a']:.4f}"
-                rf",\; \sin(\omega_{{{k}}} \cdot {a}) = {f['sin_a']:.4f}"
-                rf",\; \cos(\omega_{{{k}}} \cdot {b}) = {f['cos_b']:.4f}"
-                rf",\; \sin(\omega_{{{k}}} \cdot {b}) = {f['sin_b']:.4f}"
+                rf"k={k}:\quad "
+                rf"\omega_{{{k}}} = \underbrace{{\frac{{2\pi \cdot {k}}}{{{P}}}}}_{{2\pi k/P}}"
+                rf"= \underbrace{{{omega_val:.4f}}}_{{rad}}"
+            )
+            embed_eqs.append(
+                rf"\quad\cos\!\bigl(\underbrace{{{omega_val:.4f}}}_{{\ \omega_{{{k}}}}} "
+                rf"\cdot \underbrace{{{a}}}_{{a}}\bigr) "
+                rf"= \underbrace{{{f['cos_a']:.4f}}}_{{\ \cos(\omega_{{{k}}} a)}}"
+                rf",\quad "
+                rf"\sin\!\bigl({omega_val:.4f} \cdot {a}\bigr) "
+                rf"= \underbrace{{{f['sin_a']:.4f}}}_{{\ \sin(\omega_{{{k}}} a)}}"
+            )
+            embed_eqs.append(
+                rf"\quad\cos\!\bigl({omega_val:.4f} "
+                rf"\cdot \underbrace{{{b}}}_{{b}}\bigr) "
+                rf"= \underbrace{{{f['cos_b']:.4f}}}_{{\ \cos(\omega_{{{k}}} b)}}"
+                rf",\quad "
+                rf"\sin\!\bigl({omega_val:.4f} \cdot {b}\bigr) "
+                rf"= \underbrace{{{f['sin_b']:.4f}}}_{{\ \sin(\omega_{{{k}}} b)}}"
             )
 
-    sections.append(("Step 1: Embedding", embed_eqs))
+    sections.append(("Step 1: Embedding (Fourier Encoding)", embed_eqs))
 
-    # ─── STEP 2: ATTENTION ───
+    # ═══ STEP 2: ATTENTION ═══
     attn_eqs = []
     if show_abstract:
         attn_eqs.append(
-            r"\mathbf{q}^{(h)} = \mathbf{x}_2 \cdot W_Q^{(h)} \in \mathbb{R}^{d_h}"
+            r"\text{Attn}(\mathbf{x}) = \sum_{h=0}^{"
+            + str(n_heads - 1) + r"}"
+            r"\Bigl(A_0^{(h)} \mathbf{v}_0^{(h)} + A_1^{(h)} \mathbf{v}_1^{(h)}\Bigr) W_O^{(h)}"
         )
         attn_eqs.append(
-            r"\mathbf{k}_i^{(h)} = \mathbf{x}_i \cdot W_K^{(h)},\quad "
-            r"\mathbf{v}_i^{(h)} = \mathbf{x}_i \cdot W_V^{(h)}"
-        )
-        attn_eqs.append(
-            r"A_i^{(h)} = \text{softmax}\!\left(\frac{\mathbf{q}^{(h)} \cdot "
-            r"\mathbf{k}_i^{(h)\top}}{\sqrt{d_h}}\right)"
-        )
-        attn_eqs.append(
-            r"\text{Attn}(\mathbf{x}) = \sum_{h=0}^{" + str(n_heads-1) + r"}"
-            r"\left(A_0^{(h)} \mathbf{v}_0^{(h)} + A_1^{(h)} \mathbf{v}_1^{(h)}\right) W_O^{(h)}"
+            r"A_i^{(h)} = \mathrm{softmax}\!\left("
+            r"\frac{\mathbf{q}^{(h)} \cdot \mathbf{k}_i^{(h)\top}}{\sqrt{d_h}}"
+            r"\right)"
         )
 
     if show_concrete:
         attn_data = trace["steps"][1]["concrete_values"]["attention_weights_per_head"]
+        combined_norm = trace["steps"][1]["concrete_values"]["combined_norm"]
+
+        # Compact table of attention weights
+        head_rows = []
         for h in sorted(attn_data.keys()):
             w = attn_data[h]
-            uniform_note = r"\;\approx\;\text{uniform}" if abs(w['to_a'] - 0.5) < 0.1 else ""
-            attn_eqs.append(
-                rf"\text{{Head {h}:}}\; A_0^{{({h})}} = {w['to_a']:.4f},\; "
-                rf"A_1^{{({h})}} = {w['to_b']:.4f}{uniform_note}"
+            uniform = r"\;\approx\text{uniform}" if abs(w['to_a'] - 0.5) < 0.1 else ""
+            head_rows.append(
+                rf"{h} & "
+                rf"\underbrace{{{w['to_a']:.4f}}}_{{A_0^{{({h})}}}} & "
+                rf"\underbrace{{{w['to_b']:.4f}}}_{{A_1^{{({h})}}}} & "
+                rf"{uniform}"
             )
-        combined_norm = trace["steps"][1]["concrete_values"]["combined_norm"]
+
+        attn_table = (
+            r"\begin{array}{c|c|c|l}"
+            r"\text{Head} & A^{(h)}_{\to a} & A^{(h)}_{\to b} & \text{Note} \\"
+            r"\hline "
+            + r" \\ ".join(head_rows)
+            + r"\end{array}"
+        )
+        attn_eqs.append(attn_table)
         attn_eqs.append(
-            rf"\|\text{{Attn}}(\mathbf{{x}})\| = {combined_norm:.4f}"
+            rf"\|\text{{Attn}}(\mathbf{{x}})\| = "
+            rf"\underbrace{{{combined_norm:.4f}}}_{{||W_O \cdot \sum_h \text{{head}}_h||}}"
         )
 
-    sections.append(("Step 2: Attention", attn_eqs))
+    sections.append(("Step 2: Attention (Information Gathering)", attn_eqs))
 
-    # ─── STEP 3: RESIDUAL MID ───
+    # ═══ STEP 3: RESIDUAL MID ═══
     res_mid_eqs = []
     if show_abstract:
         res_mid_eqs.append(
@@ -428,35 +459,37 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
     if show_concrete:
         norm = trace["steps"][2]["values"]["norm"]
         res_mid_eqs.append(
-            rf"\|\mathbf{{r}}_{{\text{{mid}}}}\| = {norm:.4f}"
+            rf"\|\mathbf{{r}}_{{\text{{mid}}}}\| = "
+            rf"\underbrace{{{norm:.4f}}}_{{||\mathbf{{x}}_2 + \text{{Attn}}||}}"
         )
     sections.append(("Step 3: Residual Stream (Mid)", res_mid_eqs))
 
-    # ─── STEP 4: MLP ───
+    # ═══ STEP 4: MLP ═══
     mlp_eqs = []
     if show_abstract:
         mlp_eqs.append(
             r"z_n = \mathbf{r}_{\text{mid}} \cdot (W_{\text{in}})_{:,n} + (b_{\text{in}})_n"
         )
         mlp_eqs.append(
-            r"\approx \gamma_n \left[\cos(\omega_k a)\cos(\omega_k b) "
-            r"- \sin(\omega_k a)\sin(\omega_k b)\right]"
-        )
-        mlp_eqs.append(
+            r"\approx \gamma_n \bigl["
+            r"\cos(\omega_k a)\cos(\omega_k b) "
+            r"- \sin(\omega_k a)\sin(\omega_k b)"
+            r"\bigr]"
             r"= \gamma_n \cos\!\bigl(\omega_k(a+b)\bigr)"
-            r"\quad\leftarrow\;\textbf{Cosine Addition Formula}"
+            r"\quad\leftarrow\;\textbf{Cosine Addition}"
         )
-        mlp_eqs.append(r"m_n = \text{ReLU}(z_n) = \max(0, z_n)")
         mlp_eqs.append(
-            r"\text{MLP}(\mathbf{r}_{\text{mid}}) = \mathbf{m} \cdot W_{\text{out}} + \mathbf{b}_{\text{out}}"
+            r"m_n = \mathrm{ReLU}(z_n),\qquad"
+            r"\text{MLP}(\mathbf{r}) = \mathbf{m} \cdot W_{\text{out}} + \mathbf{b}_{\text{out}}"
         )
 
     if show_concrete:
         mlp_step = trace["steps"][3]
         mlp_eqs.append(
-            rf"\text{{Active: }} {mlp_step['key_active_neurons']}"
-            rf"\text{{ of }} {trace['weights_info']['n_key_neurons']}"
-            rf"\text{{ key neurons fire}}"
+            rf"\text{{Key neurons firing: }}"
+            rf"\underbrace{{{mlp_step['key_active_neurons']}}}_{{\\text{{active}}}}"
+            rf"\;/\;\underbrace{{{trace['weights_info']['n_key_neurons']}}}_{{\\text{{assigned}}}}"
+            rf"\quad(\text{{total active in MLP: }}{mlp_step['total_active_neurons']}/{d_mlp})"
         )
 
         neurons_by_freq = mlp_step["neurons_by_frequency"]
@@ -466,9 +499,16 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
             ideal = np.cos(omega_k * (a + b))
 
             mlp_eqs.append(
-                rf"\boxed{{k={k}}}:\; \omega_{{{k}}} = {omega_k:.4f},\;"
-                rf"\cos(\omega_{{{k}}} \cdot {a+b}) = {ideal:.6f},\;"
-                rf"\text{{{freq_info['firing']}/{freq_info['total']} fire}}"
+                rf"\boxed{{k={k}}}:\;"
+                rf"\cos\!\Bigl("
+                rf"\underbrace{{{omega_k:.4f}}}_{{\ \omega_{{{k}}}}}"
+                rf"\cdot"
+                rf"\underbrace{{{a + b}}}_{{{a}+{b}}}"
+                rf"\Bigr)"
+                rf"= \underbrace{{{ideal:.6f}}}_{{\ \text{{ideal target}}}}"
+                rf",\quad"
+                rf"\underbrace{{{freq_info['firing']}}}_{{\\text{{fire}}}}"
+                rf"/{freq_info['total']}\;\text{{neurons}}"
             )
 
             shown = 0
@@ -476,7 +516,7 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
                 if shown >= max_neurons_shown:
                     remaining = len(freq_info["details"]) - shown
                     if remaining > 0:
-                        mlp_eqs.append(rf"\quad\vdots\quad\text{{({remaining} more)}}")
+                        mlp_eqs.append(rf"\quad\vdots\quad\text{{({remaining} more neurons)}}")
                     break
 
                 fires = (r"\color{green}\checkmark" if d["actual_post_relu"] > 0
@@ -484,18 +524,28 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
 
                 mlp_eqs.append(
                     rf"\quad n_{{{d['neuron_idx']}}}:\;"
-                    rf"\underbrace{{\cos({omega_k:.3f}\!\cdot\!{a})}}_{{ {d['cos_a']:.4f} }}"
-                    rf"\!\cdot\!\underbrace{{\cos({omega_k:.3f}\!\cdot\!{b})}}_{{ {d['cos_b']:.4f} }}"
-                    rf"\;-\;\underbrace{{\sin({omega_k:.3f}\!\cdot\!{a})}}_{{ {d['sin_a']:.4f} }}"
-                    rf"\!\cdot\!\underbrace{{\sin({omega_k:.3f}\!\cdot\!{b})}}_{{ {d['sin_b']:.4f} }}"
-                    rf"\;=\;{d['trig_product']:.4f}"
-                    rf"\quad z={d['actual_pre_activation']:.3f}\;{fires}"
+                    rf"\underbrace{{{d['cos_a']:.4f}}}_"
+                    rf"{{\cos(\omega_{{{k}}}\!\cdot\!{a})}}"
+                    rf"\!\cdot\!"
+                    rf"\underbrace{{{d['cos_b']:.4f}}}_"
+                    rf"{{\cos(\omega_{{{k}}}\!\cdot\!{b})}}"
+                    rf"\;-\;"
+                    rf"\underbrace{{{d['sin_a']:.4f}}}_"
+                    rf"{{\sin(\omega_{{{k}}}\!\cdot\!{a})}}"
+                    rf"\!\cdot\!"
+                    rf"\underbrace{{{d['sin_b']:.4f}}}_"
+                    rf"{{\sin(\omega_{{{k}}}\!\cdot\!{b})}}"
+                    rf"\;=\;\underbrace{{{d['trig_product']:.4f}}}_"
+                    rf"{{\text{{trig product}}}}"
+                    rf",\; z=\underbrace{{{d['actual_pre_activation']:.3f}}}_"
+                    rf"{{\text{{pre-ReLU}}}}\;"
+                    rf"{fires}"
                 )
                 shown += 1
 
-    sections.append(("Step 4: MLP — Trig Identity", mlp_eqs))
+    sections.append(("Step 4: MLP — Trig Identity Computation", mlp_eqs))
 
-    # ─── STEP 5: FINAL RESIDUAL ───
+    # ═══ STEP 5: FINAL RESIDUAL ═══
     res_final_eqs = []
     if show_abstract:
         res_final_eqs.append(
@@ -503,21 +553,25 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
         )
     if show_concrete:
         norm = trace["steps"][4]["values"]["norm"]
-        res_final_eqs.append(rf"\|\mathbf{{r}}_{{\text{{final}}}}\| = {norm:.4f}")
+        mlp_norm = trace["steps"][3]["mlp_output_norm"]
+        res_final_eqs.append(
+            rf"\|\mathbf{{r}}_{{\text{{final}}}}\| = "
+            rf"\underbrace{{{norm:.4f}}}_{{||\mathbf{{r}}_{{\text{{mid}}}} + \text{{MLP}}||}}"
+            rf",\quad \|\text{{MLP output}}\| = "
+            rf"\underbrace{{{mlp_norm:.4f}}}_{{||W_{{\text{{out}}}}\cdot\mathbf{{m}}+\mathbf{{b}}_{{\text{{out}}}}||}}"
+        )
     sections.append(("Step 5: Final Residual", res_final_eqs))
 
-    # ─── STEP 6: UNEMBEDDING ───
+    # ═══ STEP 6: UNEMBEDDING ═══
     logit_eqs = []
     if show_abstract:
         logit_eqs.append(
             r"\text{Logit}(c) = \mathbf{r}_{\text{final}} \cdot (W_U)_{c,:}"
-        )
-        logit_eqs.append(
-            r"\approx \sum_{k \in \mathcal{K}} \alpha_k "
+            r"\;\approx\; \sum_{k \in \mathcal{K}} \alpha_k "
             r"\cos\!\left(\frac{2\pi k(a+b-c)}{" + str(P) + r"}\right)"
         )
         logit_eqs.append(
-            r"\hat{c} = \arg\max_c \;\text{Logit}(c) = (a+b) \bmod " + str(P)
+            r"\hat{c} = \arg\max_c \;\text{Logit}(c)"
         )
 
     if show_concrete:
@@ -526,54 +580,70 @@ def generate_temml_equation_html(trace: dict, show_abstract: bool = True,
         logit_val = logit_step["values"]["logit_at_correct"]
         prob_val = logit_step["values"]["prob_at_correct"]
 
-        # Constructive interference
+        # Constructive interference at correct answer
+        n_freqs = len(key_freqs)
+        cos_terms = "+".join(
+            rf"\underbrace{{\cos\!\left(\frac{{2\pi\!\cdot\!{k}\!\cdot\!"
+            rf"\overbrace{{0}}^{{{a}+{b}-{correct}}}}}{{{P}}}\right)}}_{{=1}}"
+            for k in key_freqs[:4]
+        )
+        if len(key_freqs) > 4:
+            cos_terms += r"+\cdots"
+
         logit_eqs.append(
-            rf"\text{{At }}\;c = {correct}:\quad"
-            + "+".join(
-                rf"\cos\!\left(\frac{{2\pi\!\cdot\!{k}\!\cdot\!0}}{{{P}}}\right)"
-                for k in key_freqs[:5]
-            )
-            + (r"+\cdots" if len(key_freqs) > 5 else "")
-            + rf" = {len(key_freqs)} \times 1"
+            rf"\text{{At }}c = \underbrace{{{correct}}}_{{(a+b)\bmod P}}:\quad "
+            + cos_terms
+            + rf" = \underbrace{{{n_freqs} \times 1}}_{{|\mathcal{{K}}|\text{{ terms, all }}=1}}"
             + r"\;\;\color{green}\text{(constructive!)}"
         )
 
-        # Destructive interference
+        # Destructive interference at wrong answer
         wrong_c = (correct + 1) % P
         interf_wrong = logit_step["interference_demo"]["at_wrong_example"]
         wrong_sum = sum(interf_wrong.values())
-        wrong_terms = list(interf_wrong.items())[:5]
+        wrong_terms = list(interf_wrong.items())[:4]
+        destr_terms = "+".join(
+            rf"\underbrace{{({v:.3f})}}_{{k={k}}}"
+            for k, v in wrong_terms
+        )
+        if len(interf_wrong) > 4:
+            destr_terms += r"+\cdots"
+
         logit_eqs.append(
-            rf"\text{{At }}\;c = {wrong_c}:\quad"
-            + "+".join(
-                rf"({v:.3f})" for k, v in wrong_terms
-            )
-            + (r"+\cdots" if len(interf_wrong) > 5 else "")
-            + rf" = {wrong_sum:.3f}"
+            rf"\text{{At }}c = \underbrace{{{wrong_c}}}_{{\ \neq(a+b)\bmod P}}:\quad "
+            + destr_terms
+            + rf" = \underbrace{{{wrong_sum:.3f}}}_{{\ \text{{near zero}}}}"
             + r"\;\;\color{red}\text{(destructive!)}"
         )
 
         logit_eqs.append(
-            rf"\text{{Logit}}({correct}) = {logit_val:.4f},\quad "
-            rf"P(c\!=\!{correct}\mid {a},{b}) = {prob_val:.4f},\quad"
-            rf"\rho_{{\text{{actual vs ideal}}}} = {corr:.4f}"
+            rf"\text{{Logit}}(\underbrace{{{correct}}}_{{\ c^*}}) = "
+            rf"\underbrace{{{logit_val:.4f}}}_{{\ \mathbf{{r}}_{{\text{{final}}}}\cdot W_U[{correct}]}}"
+            rf",\quad "
+            rf"P(c\!=\!{correct}) = "
+            rf"\underbrace{{{prob_val:.4f}}}_{{\ \text{{softmax}}}}"
+            rf",\quad "
+            rf"\rho = \underbrace{{{corr:.4f}}}_{{\ \text{{corr(actual, ideal)}}}}"
         )
 
     sections.append(("Step 6: Unembedding → Prediction", logit_eqs))
 
-    # ─── RESULT ───
+    # ═══ RESULT ═══
     result_eqs = [
-        rf"\boxed{{({a} + {b}) \bmod {P} = {correct}}}",
-        rf"\hat{{c}} = {predicted}\quad"
+        rf"\boxed{{(\underbrace{{{a}}}_{{a}} + \underbrace{{{b}}}_{{b}}) "
+        rf"\bmod \underbrace{{{P}}}_{{P}} = \underbrace{{{correct}}}_{{\ \text{{target}}}}}}",
+
+        rf"\hat{{c}} = \underbrace{{{predicted}}}_{{\ \arg\max\text{{ logits}}}}\quad"
         + (r"\color{green}\checkmark\;\text{CORRECT}" if is_correct
            else rf"\color{{red}}\times\;\text{{WRONG (expected {correct})}}"),
-        rf"\text{{Confidence: }} {confidence*100:.1f}\%",
+
+        rf"\text{{Confidence: }} \underbrace{{{confidence*100:.1f}\%}}_"
+        rf"{{\ P(\hat{{c}}={predicted}\mid {a},{b})}}",
     ]
     sections.append(("Result", result_eqs))
 
-    # ─── BUILD HTML ───
-    return _build_temml_html(header_latex, sections)
-
+    # ═══ BUILD MARKDOWN ═══
+    return _build_temml_html("", sections)
 
 def _build_temml_html(header_latex: str, sections: list[tuple[str, list[str]]]) -> str:
     """
