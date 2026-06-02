@@ -920,9 +920,6 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
     """
     Plot token embeddings projected onto a chosen pair of dimensions.
     Shows circles with real coordinate values for each token.
-    
-    For a grokked model, pairs of dimensions corresponding to key frequencies
-    will show tokens arranged in circles (Fourier structure).
     """
     P = model.P
     W_E = model.embed.weight[:P].detach().cpu().numpy()  # (P, d_model)
@@ -932,13 +929,27 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
     
     fig = go.Figure()
     
-    # Plot all token positions
+    # Compute angles relative to center for cyclic color mapping
+    cx, cy = x_coords.mean(), y_coords.mean()
+    angles = np.arctan2(y_coords - cy, x_coords - cx)  # [-pi, pi]
+    color_values = (angles + np.pi) / (2 * np.pi)  # [0, 1], cyclic
+    
+    # Plot all token positions with cyclic blue→green→blue colorscale
     fig.add_trace(go.Scatter(
         x=x_coords,
         y=y_coords,
         mode="markers+text",
-        marker=dict(size=10, color=np.arange(P), colorscale="hsv", showscale=True, 
-                    colorbar=dict(title="Token ID")),
+        marker=dict(
+            size=10,
+            color=color_values,
+            colorscale=CYCLIC_BLUE_GREEN,
+            showscale=True,
+            colorbar=dict(
+                title="Position (zyklisch)",
+                tickvals=[0, 0.25, 0.5, 0.75, 1.0],
+                ticktext=["0°", "90°", "180°", "270°", "360°"],
+            ),
+        ),
         text=[str(i) for i in range(P)],
         textposition="top center",
         textfont=dict(size=7),
@@ -946,24 +957,25 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
             np.arange(P),
             x_coords,
             y_coords,
+            np.degrees(angles) % 360,
         ], axis=-1),
         hovertemplate=(
             "Token: %{customdata[0]:.0f}<br>"
             f"Dim {dim_x}: %{{customdata[1]:.4f}}<br>"
             f"Dim {dim_y}: %{{customdata[2]:.4f}}<br>"
+            "Winkel: %{customdata[3]:.1f}°<br>"
             "<extra></extra>"
         ),
         name="Token Embeddings",
     ))
     
     # Fit and draw a circle to show the circular structure
-    center_x, center_y = x_coords.mean(), y_coords.mean()
-    radii = np.sqrt((x_coords - center_x)**2 + (y_coords - center_y)**2)
+    radii = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
     avg_radius = radii.mean()
     
     theta = np.linspace(0, 2*np.pi, 200)
-    circle_x = center_x + avg_radius * np.cos(theta)
-    circle_y = center_y + avg_radius * np.sin(theta)
+    circle_x = cx + avg_radius * np.cos(theta)
+    circle_y = cy + avg_radius * np.sin(theta)
     
     fig.add_trace(go.Scatter(
         x=circle_x, y=circle_y,
@@ -972,6 +984,18 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
         name=f"Fitted circle (r={avg_radius:.3f})",
         hoverinfo="skip",
     ))
+    
+    # Draw lines connecting consecutive tokens to show winding order
+    for i in range(P):
+        j = (i + 1) % P
+        fig.add_trace(go.Scatter(
+            x=[x_coords[i], x_coords[j]],
+            y=[y_coords[i], y_coords[j]],
+            mode="lines",
+            line=dict(color="rgba(150,150,150,0.15)", width=0.5),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
     
     # Add annotations showing the actual values for a few tokens
     for token_id in [0, P//4, P//2, 3*P//4]:
@@ -986,13 +1010,12 @@ def make_embedding_circle_plot(model: ModularAdditionTransformer, dim_x: int = 0
         title=f"Embedding Space: Dim {dim_x} vs Dim {dim_y} (P={P})",
         xaxis_title=f"Dimension {dim_x}",
         yaxis_title=f"Dimension {dim_y}",
-        xaxis=dict(scaleanchor="y", scaleratio=1),  # Equal aspect ratio
+        xaxis=dict(scaleanchor="y", scaleratio=1),
         height=650,
         width=700,
     )
     
     return fig
-
 
 def make_embedding_all_dims_heatmap(model: ModularAdditionTransformer, token_id: int = 0) -> go.Figure:
     """
