@@ -42,6 +42,8 @@ import subprocess
 import time
 from pathlib import Path
 
+DEFAULT_P = 113
+
 # =============================================================================
 # Auto-restart under `uv run` if invoked directly with python3
 # =============================================================================
@@ -625,7 +627,7 @@ def compute_circle_angles(model: ModularAdditionTransformer, pair_info: dict) ->
 # Training with Live Progress
 # =============================================================================
 
-def train_model(P: int = 113, d_model: int = 128, n_heads: int = 4, d_mlp: int = 512,
+def train_model(P: int = DEFAULT_P, d_model: int = 128, n_heads: int = 4, d_mlp: int = 512,
                 train_frac: float = 0.3, epochs: int = 80000, lr: float = 1e-3,
                 weight_decay: float = 1.0, progress_cb=None, progress=None) -> tuple:
     """Train a model on modular addition until it groks."""
@@ -1955,7 +1957,7 @@ $$\\hat{{c}} = \\underbrace{{\\arg\\max_c}}_{{\\text{{select max logit}}}} \\sum
                 gr.Markdown("### Model & Training Configuration")
                 with gr.Row():
                     with gr.Column(scale=1):
-                        p_input = gr.Number(value=113, label="Prime P (modulus)", precision=0)
+                        p_input = gr.Number(value=DEFAULT_P, label="Prime P (modulus)", precision=0)
                         d_model_input = gr.Number(value=128, label="d_model", precision=0)
                         n_heads_input = gr.Number(value=4, label="n_heads", precision=0)
                         d_mlp_input = gr.Number(value=512, label="d_mlp", precision=0)
@@ -2731,7 +2733,7 @@ def save_run(model, train_losses, test_accs, metrics_table, config: dict,
         run_id (str): The name/ID of the saved run.
     """
     grokked = is_grokked(metrics_table)
-    P = config.get("P", 113)
+    P = config.get("P", DEFAULT_P)
     
     if custom_name:
         run_id = custom_name
