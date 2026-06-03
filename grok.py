@@ -3369,14 +3369,16 @@ def make_projection_equation_markdown(model: ModularAdditionTransformer,
         md += f"- $\\|\\mathbf{{s}}_{{{k}}}\\|^2 = {sin_norm_sq:.4f}$\n\n"
 
         md += f"**Top 5 dimensions contributing to $\\mathbf{{c}}_{{{k}}}$:**\n\n"
-        md += "| Dim | Weight | |Weight| |\n|-----|--------|--------|\n"
+        md += "<table>\n<thead><tr><th>Dim</th><th>Weight</th><th>|Weight|</th></tr></thead>\n<tbody>\n"
         for d in top_cos_dims:
-            md += f"| {d} | {cos_direction[d]:.4f} | {abs(cos_direction[d]):.4f} |\n"
+            md += f"<tr><td>{d}</td><td>{cos_direction[d]:.4f}</td><td>{abs(cos_direction[d]):.4f}</td></tr>\n"
+        md += "</tbody>\n</table>\n\n"
 
         md += f"\n**Top 5 dimensions contributing to $\\mathbf{{s}}_{{{k}}}$:**\n\n"
-        md += "| Dim | Weight | |Weight| |\n|-----|--------|--------|\n"
+        md += "<table>\n<thead><tr><th>Dim</th><th>Weight</th><th>|Weight|</th></tr></thead>\n<tbody>\n"
         for d in top_sin_dims:
-            md += f"| {d} | {sin_direction[d]:.4f} | {abs(sin_direction[d]):.4f} |\n"
+            md += f"<tr><td>{d}</td><td>{sin_direction[d]:.4f}</td><td>{abs(sin_direction[d]):.4f}</td></tr>\n"
+        md += "</tbody>\n</table>\n\n"
 
         md += "\n#### Worked example: Token t=5\n\n"
         e5 = W_E[5]
