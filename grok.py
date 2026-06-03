@@ -1348,6 +1348,18 @@ def make_acdc_circuit_plot(acdc_summary: dict) -> go.Figure:
 def build_gui():
     """Build the Gradio interface with live training plots and metrics table."""
 
+    _OriginalMarkdown = gr.Markdown
+    _LATEX_DELIMITERS = [
+        {"left": "$$", "right": "$$", "display": True},
+        {"left": "$", "right": "$", "display": False},
+    ]
+
+    def _PatchedMarkdown(*args, **kwargs):
+        kwargs.setdefault("latex_delimiters", _LATEX_DELIMITERS)
+        return _OriginalMarkdown(*args, **kwargs)
+
+    gr.Markdown = _PatchedMarkdown
+
     # Global state
     state = {
         "model": None,
