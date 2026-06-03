@@ -127,6 +127,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import gradio as gr
 
 from circuit_equation_viewer import build_equation_viewer_tab
 
@@ -1346,7 +1347,6 @@ def make_acdc_circuit_plot(acdc_summary: dict) -> go.Figure:
 
 def build_gui():
     """Build the Gradio interface with live training plots and metrics table."""
-    import gradio as gr
 
     # Global state
     state = {
