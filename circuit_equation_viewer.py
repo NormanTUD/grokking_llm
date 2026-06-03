@@ -839,7 +839,7 @@ def build_equation_viewer_tab(state: dict):
             f"**Prediction:** {predicted} | "
             f"**Confidence:** {confidence*100:.1f}% | "
             f"**Status:** {'✅ Correct' if is_correct else '❌ Wrong'}\n\n"
-            f"**Key frequencies:** {key_frequencies}\n\n"
+            f"**Key frequencies:** {[int(x) for x in key_frequencies]}\n\n"
             f"**Correlation (actual vs formula):** "
             f"{trace['steps'][5]['values']['correlation_actual_vs_ideal']:.4f}\n\n"
             f"**Active key neurons:** {trace['steps'][3]['key_active_neurons']} / "
