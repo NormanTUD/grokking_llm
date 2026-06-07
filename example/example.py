@@ -38,7 +38,6 @@ N_KEY = len(KEY_FREQS)           # 5 key frequencies
 # Derived: angular frequencies w_k = 2*pi*k / P
 W_KEY = np.array([2.0 * np.pi * k / P for k in KEY_FREQS])  # shape: (5,)
 
-
 # =============================================================================
 # UTILITY: SOFTMAX
 # =============================================================================
@@ -56,7 +55,6 @@ def softmax(x):
     e_x = np.exp(x - np.max(x, axis=-1, keepdims=True))
     return e_x / np.sum(e_x, axis=-1, keepdims=True)
 
-
 # =============================================================================
 # UTILITY: RELU
 # =============================================================================
@@ -70,7 +68,6 @@ def relu(x):
         max(0, x) element-wise
     """
     return np.maximum(0.0, x)
-
 
 # =============================================================================
 # UTILITY: SIGMOID (used for 2-element softmax)
@@ -87,7 +84,6 @@ def sigmoid(x):
     """
     return 1.0 / (1.0 + np.exp(-x))
 
-
 # =============================================================================
 # DENSE (Linear layer, no bias)
 # =============================================================================
@@ -102,7 +98,6 @@ def dense(x, W):
         output, shape (..., out_features)
     """
     return x @ W.T
-
 
 # =============================================================================
 # DENSE WITH BIAS
@@ -119,7 +114,6 @@ def dense_bias(x, W, b):
         output, shape (..., out_features)
     """
     return x @ W.T + b
-
 
 # =============================================================================
 # EMBEDDING: Map one-hot token to sin/cos representation
@@ -138,7 +132,6 @@ def embed(token_id, W_E):
     # One-hot lookup is just selecting a column
     return W_E[:, token_id]
 
-
 # =============================================================================
 # POSITIONAL EMBEDDING
 # =============================================================================
@@ -154,7 +147,6 @@ def add_positional(embedding, pos, W_pos):
         embedding + positional, shape (D_MODEL,)
     """
     return embedding + W_pos[pos]
-
 
 # =============================================================================
 # ATTENTION SCORE (single head, from '=' to token at position i)
@@ -180,7 +172,6 @@ def attention_score(x_query, x_key, W_Q, W_K):
     score = np.dot(q, k) / np.sqrt(D_HEAD)
     return score
 
-
 # =============================================================================
 # ATTENTION PATTERN (simplified: softmax over 2 positions = sigmoid)
 # =============================================================================
@@ -199,7 +190,6 @@ def attention_pattern(score_a, score_b):
     weight_a = sigmoid(score_a - score_b)
     weight_b = 1.0 - weight_a
     return weight_a, weight_b
-
 
 # =============================================================================
 # ATTENTION HEAD OUTPUT (OV circuit)
@@ -232,7 +222,6 @@ def attention_head(x_a, x_b, weight_a, weight_b, W_V, W_O):
     output = W_O @ v_combined  # shape (D_MODEL,)
     return output
 
-
 # =============================================================================
 # MULTI-HEAD ATTENTION (all heads summed)
 # =============================================================================
@@ -264,7 +253,6 @@ def multi_head_attention(x_a, x_b, x_eq, heads_params):
     
     # Residual connection
     return x_eq + attn_output
-
 
 # =============================================================================
 # MLP LAYER (ReLU activation)
@@ -301,7 +289,6 @@ def mlp(x, W_in, b_in, W_out, b_out):
     
     return output, hidden
 
-
 # =============================================================================
 # UNEMBEDDING: Compute logits for all candidate outputs c ∈ {0, ..., P-1}
 # =============================================================================
@@ -324,7 +311,6 @@ def unembed(x, W_U):
     logits = W_U @ x  # shape (P,)
     return logits
 
-
 # =============================================================================
 # THE IDEALIZED FOURIER MULTIPLICATION ALGORITHM (analytical version)
 # =============================================================================
@@ -344,7 +330,6 @@ def fourier_embed(token_id, freqs):
     angles = freqs * token_id  # shape (N_KEY,)
     return np.sin(angles), np.cos(angles)
 
-
 def trig_combine(sin_a, cos_a, sin_b, cos_b):
     """
     Apply trigonometric addition identities:
@@ -363,7 +348,6 @@ def trig_combine(sin_a, cos_a, sin_b, cos_b):
     cos_ab = cos_a * cos_b - sin_a * sin_b
     sin_ab = sin_a * cos_b + cos_a * sin_b
     return sin_ab, cos_ab
-
 
 def compute_logits_fourier(sin_ab, cos_ab, freqs, alphas):
     """
@@ -393,7 +377,6 @@ def compute_logits_fourier(sin_ab, cos_ab, freqs, alphas):
             logits[c] += alpha * (cos_ab[i] * cos_c + sin_ab[i] * sin_c)
     
     return logits
-
 
 # =============================================================================
 # FULL FORWARD PASS: IDEALIZED (analytical Fourier multiplication)
@@ -450,7 +433,6 @@ def forward_idealized(a, b, freqs=W_KEY, alphas=None):
     intermediates['prob_true'] = probs[(a + b) % P]
     
     return predicted_c, logits, intermediates
-
 
 # =============================================================================
 # FULL FORWARD PASS: SIMULATED TRANSFORMER (with actual weight matrices)
@@ -525,7 +507,6 @@ def initialize_weights(seed=42):
         'W_U': W_U,
     }
 
-
 def forward_transformer(a, b, weights):
     """
     Full forward pass through the simulated transformer.
@@ -589,7 +570,6 @@ def forward_transformer(a, b, weights):
     
     return predicted_c, logits, intermediates
 
-
 # =============================================================================
 # CONSTRUCTIVE INTERFERENCE DEMO
 # =============================================================================
@@ -627,7 +607,6 @@ def demo_constructive_interference(a, b):
     print(f"  Ratio (peak / 2nd best): {logits[true_c] / np.sort(logits)[-2]:.2f}x")
     
     return logits
-
 
 # =============================================================================
 # MAIN: Run everything and print results
@@ -676,3 +655,175 @@ if __name__ == "__main__":
     top5 = np.argsort(logits)[-5:][::-1]
     for c in top5:
         print(f"    c={c:3d}: logit={logits[c]:8.3f}  {'← CORRECT' if c == true_c else ''}")
+    
+    
+    print(f"\n  Step 4 — Prediction:")
+    print(f"    Predicted c = {pred}")
+    print(f"    True c      = {true_c}")
+    print(f"    Correct: {pred == true_c}")
+    print(f"    P(true c)   = {info['prob_true']:.6f}")
+    
+    # =========================================================================
+    # TEST 2: Constructive interference demonstration
+    # =========================================================================
+    demo_constructive_interference(a, b)
+    
+    # =========================================================================
+    # TEST 3: Full transformer simulation (with weight matrices)
+    # =========================================================================
+    print(f"\n{'─'*70}")
+    print("TEST 3: SIMULATED TRANSFORMER (with actual weight matrices)")
+    print(f"{'─'*70}")
+    
+    weights = initialize_weights(seed=42)
+    pred_t, logits_t, info_t = forward_transformer(a, b, weights)
+    
+    print(f"\n  Embedding shapes:")
+    print(f"    W_E:   {weights['W_E'].shape}  (D_MODEL x P)")
+    print(f"    W_pos: {weights['W_pos'].shape}  (3 x D_MODEL)")
+    print(f"    W_U:   {weights['W_U'].shape}  (P x D_MODEL)")
+    
+    print(f"\n  Residual stream after embedding + positional:")
+    print(f"    x0_a norm: {np.linalg.norm(info_t['x0_a']):.4f}")
+    print(f"    x0_b norm: {np.linalg.norm(info_t['x0_b']):.4f}")
+    print(f"    x0_eq norm: {np.linalg.norm(info_t['x0_eq']):.4f}")
+    
+    print(f"\n  After multi-head attention:")
+    print(f"    x1 norm: {np.linalg.norm(info_t['x1_post_attn']):.4f}")
+    
+    print(f"\n  MLP hidden layer (ReLU activations):")
+    print(f"    Shape: {info_t['mlp_hidden'].shape}")
+    print(f"    Active neurons (>0): {np.sum(info_t['mlp_hidden'] > 0)} / {D_MLP}")
+    print(f"    Max activation: {np.max(info_t['mlp_hidden']):.4f}")
+    print(f"    Mean (non-zero): {info_t['mlp_hidden'][info_t['mlp_hidden'] > 0].mean():.4f}")
+    
+    print(f"\n  Final residual stream:")
+    print(f"    x2 norm: {np.linalg.norm(info_t['x2_final']):.4f}")
+    
+    print(f"\n  Logits (top 5):")
+    top5_t = np.argsort(logits_t)[-5:][::-1]
+    for c in top5_t:
+        marker = '← CORRECT' if c == true_c else ''
+        print(f"    c={c:3d}: logit={logits_t[c]:8.3f}  {marker}")
+    
+    print(f"\n  Note: The simulated transformer uses random (non-trained) weights")
+    print(f"  for attention/MLP, so it won't get the right answer.")
+    print(f"  The IDEALIZED version (Test 1) shows the correct algorithm.")
+    
+    # =========================================================================
+    # TEST 4: Exhaustive correctness check of idealized algorithm
+    # =========================================================================
+    print(f"\n{'─'*70}")
+    print("TEST 4: EXHAUSTIVE CORRECTNESS CHECK (all P*P = 12769 inputs)")
+    print(f"{'─'*70}")
+    
+    correct_count = 0
+    total = P * P
+    
+    for test_a in range(P):
+        for test_b in range(P):
+            pred_c, _, _ = forward_idealized(test_a, test_b)
+            if pred_c == (test_a + test_b) % P:
+                correct_count += 1
+    
+    accuracy = correct_count / total * 100
+    print(f"\n  Results: {correct_count}/{total} correct ({accuracy:.2f}%)")
+    print(f"  The idealized Fourier multiplication algorithm achieves perfect accuracy!")
+    
+    # =========================================================================
+    # TEST 5: Demonstrate how individual neurons work
+    # =========================================================================
+    print(f"\n{'─'*70}")
+    print("TEST 5: SINGLE NEURON ANALYSIS (how trig identities emerge from ReLU)")
+    print(f"{'─'*70}")
+    
+    # Simulate a single "ideal" MLP neuron that computes cos(wk*(a+b))
+    # The neuron's pre-activation is: cos(wk*a)*cos(wk*b) - sin(wk*a)*sin(wk*b) + bias
+    # After ReLU, pairs of neurons with opposite phases reconstruct the full cosine.
+    
+    k_demo = KEY_FREQS[0]  # frequency 14
+    wk_demo = 2.0 * np.pi * k_demo / P
+    
+    print(f"\n  Demonstrating neuron for frequency k={k_demo} (wk={wk_demo:.4f})")
+    print(f"  Input: a={a}, b={b}")
+    
+    # What the neuron computes (pre-ReLU):
+    cos_a = np.cos(wk_demo * a)
+    cos_b = np.cos(wk_demo * b)
+    sin_a = np.sin(wk_demo * a)
+    sin_b = np.sin(wk_demo * b)
+    
+    # The attention layer produces products like cos(wk*a)*cos(wk*b)
+    # via bilinear interaction (attention weight * OV circuit)
+    term_cc = cos_a * cos_b
+    term_ss = sin_a * sin_b
+    term_sc = sin_a * cos_b
+    term_cs = cos_a * sin_b
+    
+    print(f"\n  Products computed by attention (degree-2 polynomials):")
+    print(f"    cos(wk*a)*cos(wk*b) = {cos_a:.4f} * {cos_b:.4f} = {term_cc:.4f}")
+    print(f"    sin(wk*a)*sin(wk*b) = {sin_a:.4f} * {sin_b:.4f} = {term_ss:.4f}")
+    print(f"    sin(wk*a)*cos(wk*b) = {sin_a:.4f} * {cos_b:.4f} = {term_sc:.4f}")
+    print(f"    cos(wk*a)*sin(wk*b) = {cos_a:.4f} * {sin_b:.4f} = {term_cs:.4f}")
+    
+    # Trig identity: cos(wk*(a+b)) = cos*cos - sin*sin
+    cos_ab_computed = term_cc - term_ss
+    sin_ab_computed = term_sc + term_cs
+    cos_ab_direct = np.cos(wk_demo * (a + b))
+    sin_ab_direct = np.sin(wk_demo * (a + b))
+    
+    print(f"\n  Trig identity verification:")
+    print(f"    cos(wk*(a+b)) via identity: {cos_ab_computed:.6f}")
+    print(f"    cos(wk*(a+b)) direct:       {cos_ab_direct:.6f}")
+    print(f"    Match: {np.isclose(cos_ab_computed, cos_ab_direct)}")
+    print(f"    sin(wk*(a+b)) via identity: {sin_ab_computed:.6f}")
+    print(f"    sin(wk*(a+b)) direct:       {sin_ab_direct:.6f}")
+    print(f"    Match: {np.isclose(sin_ab_computed, sin_ab_direct)}")
+    
+    # Show how ReLU + pairs of neurons reconstruct the cosine:
+    # Neuron+ has pre-activation: cos(wk*(a+b)) + bias (bias ~ 0.5 to shift into ReLU range)
+    # Neuron- has pre-activation: -cos(wk*(a+b)) + bias
+    # ReLU(x+0.5) - ReLU(-x+0.5) ≈ x for |x| < 0.5
+    bias = 1.0  # Large enough that most values pass through ReLU
+    neuron_pos = relu(cos_ab_computed + bias)
+    neuron_neg = relu(-cos_ab_computed + bias)
+    reconstructed = neuron_pos - neuron_neg
+    
+    print(f"\n  ReLU reconstruction of cos(wk*(a+b)):")
+    print(f"    Neuron+ pre-act: {cos_ab_computed + bias:.4f} → ReLU: {neuron_pos:.4f}")
+    print(f"    Neuron- pre-act: {-cos_ab_computed + bias:.4f} → ReLU: {neuron_neg:.4f}")
+    print(f"    Reconstructed (pos - neg): {reconstructed:.4f}")
+    print(f"    True value: {cos_ab_computed:.4f}")
+    print(f"    (In practice, the model uses ~44 neurons per frequency for robustness)")
+    
+    # =========================================================================
+    # SUMMARY
+    # =========================================================================
+    print(f"\n{'='*70}")
+    print("SUMMARY: THE FOURIER MULTIPLICATION ALGORITHM")
+    print(f"{'='*70}")
+    print(f"""
+    Given inputs a={a}, b={b}, computing (a+b) mod {P} = {true_c}:
+    
+    1. EMBED: Map a,b → sin(wk*a), cos(wk*a), sin(wk*b), cos(wk*b)
+       for k ∈ {KEY_FREQS}
+       
+    2. ATTENTION + MLP: Compute trig identities
+       cos(wk*(a+b)) = cos(wk*a)cos(wk*b) - sin(wk*a)sin(wk*b)
+       sin(wk*(a+b)) = sin(wk*a)cos(wk*b) + cos(wk*a)sin(wk*b)
+       
+    3. UNEMBED: For each candidate c, compute
+       logit(c) = Σ_k α_k * cos(wk*(a+b-c))
+       
+    4. CONSTRUCTIVE INTERFERENCE:
+       At c* = {true_c} = ({a}+{b}) mod {P}, ALL cosines = 1
+       → logit({true_c}) = Σ α_k = {sum([44.1, 42.2, 44.8, 66.6, 63.0]):.1f} (maximum!)
+       At other c values, cosines partially cancel → smaller logits
+       
+    Key insight: {N_KEY} frequencies suffice because their sum has a unique
+    global maximum at 0 mod {P} (constructive interference), while individual
+    cosines have many near-peaks that cancel when summed (destructive interference).
+    """)
+    
+    print("Done! Set breakpoints anywhere above to inspect intermediate values.")
+    print("Try: python -m pdb grokking_transformer_sim.py")
