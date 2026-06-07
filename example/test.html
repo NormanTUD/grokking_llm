@@ -1,0 +1,1338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>From Circles to Sine Waves — How the Transformer "Thinks"</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #0a0a1a;
+            color: #e0e0e0;
+            line-height: 1.7;
+            overflow-x: hidden;
+        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        
+        h1 {
+            text-align: center;
+            font-size: 2.5em;
+            margin: 30px 0 10px;
+            background: linear-gradient(135deg, #667eea, #e91e63);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        h2 {
+            font-size: 1.8em;
+            margin: 40px 0 15px;
+            color: #667eea;
+            border-bottom: 2px solid #333;
+            padding-bottom: 10px;
+        }
+        h3 {
+            font-size: 1.3em;
+            color: #aaa;
+            margin: 20px 0 10px;
+        }
+        p, .explanation {
+            font-size: 1.05em;
+            color: #bbb;
+            margin: 10px 0;
+            max-width: 800px;
+        }
+        .big-idea {
+            background: linear-gradient(135deg, rgba(102,126,234,0.15), rgba(233,30,99,0.1));
+            border: 2px solid #667eea;
+            border-radius: 16px;
+            padding: 25px 30px;
+            margin: 25px 0;
+            font-size: 1.15em;
+            color: #ddd;
+        }
+        .big-idea strong { color: #667eea; }
+        .big-idea em { color: #e91e63; }
+
+        .section {
+            background: #12122a;
+            border-radius: 16px;
+            padding: 30px;
+            margin: 30px 0;
+            border: 1px solid #2a2a4a;
+        }
+
+        canvas {
+            display: block;
+            margin: 15px auto;
+            border-radius: 12px;
+            background: #0d0d1a;
+            border: 1px solid #333;
+        }
+
+        .canvas-row {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+            margin: 20px 0;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin: 15px 0;
+        }
+        .controls label { color: #aaa; font-weight: bold; }
+        .controls input[type="range"] {
+            width: 200px;
+            accent-color: #667eea;
+        }
+        .controls input[type="number"] {
+            width: 70px;
+            padding: 6px 10px;
+            border-radius: 6px;
+            border: 1px solid #444;
+            background: #0d0d1a;
+            color: #fff;
+            font-size: 1em;
+            text-align: center;
+        }
+        .controls button {
+            padding: 8px 20px;
+            border-radius: 8px;
+            border: none;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            font-size: 1em;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .controls button:hover { opacity: 0.9; }
+
+        .value-display {
+            font-family: 'Courier New', monospace;
+            background: #0d0d1a;
+            padding: 4px 12px;
+            border-radius: 6px;
+            color: #4caf50;
+            font-size: 1.1em;
+            border: 1px solid #333;
+        }
+
+        .arrow-label {
+            text-align: center;
+            font-size: 2em;
+            color: #667eea;
+            margin: 10px 0;
+        }
+
+        .step-indicator {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 36px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+
+        .side-by-side {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            align-items: start;
+        }
+        @media (max-width: 800px) {
+            .side-by-side { grid-template-columns: 1fr; }
+            .canvas-row { flex-direction: column; }
+        }
+
+        .color-dot {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+
+        .freq-legend {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin: 10px 0;
+        }
+        .freq-legend span {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.9em;
+            color: #aaa;
+        }
+
+        .embedding-space {
+            position: relative;
+            margin: 20px auto;
+        }
+
+        .analogy-box {
+            background: #1a1a3a;
+            border: 1px dashed #667eea;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 15px 0;
+        }
+        .analogy-box h4 { color: #e91e63; margin-bottom: 8px; }
+    </style>
+</head>
+<body>
+<div class="container">
+
+<h1>🔵 From Circles to Sine Waves</h1>
+<p style="text-align:center; color:#888; font-size:1.1em; margin-bottom:30px;">
+    How a neural network uses spinning circles to do math (mod 113)
+</p>
+
+<!-- ============================================================ -->
+<!-- PART 1: THE FUNDAMENTAL CONNECTION -->
+<!-- ============================================================ -->
+<h2><span class="step-indicator">1</span> The Big Secret: A Circle IS a Sine Wave</h2>
+
+<div class="big-idea">
+    <strong>Key Insight:</strong> A sine wave is just the <em>shadow</em> of a point moving around a circle.
+    If you watch a dot go around a circle and track its height over time, you get a sine wave.
+    Track its horizontal position? That's a cosine wave. <em>They're the same thing, just viewed differently!</em>
+</div>
+
+<div class="section">
+    <h3>Watch it happen — the circle unrolls into a wave:</h3>
+    <div class="controls">
+        <label>Speed:</label>
+        <input type="range" id="speed1" min="0.5" max="4" step="0.1" value="1.5">
+        <button onclick="toggleAnim1()">⏯ Play/Pause</button>
+    </div>
+    <canvas id="canvas-circle-to-sine" width="900" height="350"></canvas>
+    <p style="text-align:center; color:#888; font-size:0.9em;">
+        Left: a point spinning on a circle. Right: its vertical position (sin) traced over time.
+        <br>The <span style="color:#e91e63;">red line</span> connects them — same value!
+    </p>
+</div>
+
+<!-- ============================================================ -->
+<!-- PART 2: EMBEDDING SPACE = CIRCLES -->
+<!-- ============================================================ -->
+<h2><span class="step-indicator">2</span> The "Embedding Space" — Numbers Become Points on Circles</h2>
+
+<div class="big-idea">
+    When the transformer wants to represent a number like <strong>a = 37</strong>, it doesn't just store "37".
+    Instead, it places a point on <em>multiple circles</em> — one for each "key frequency" it learned.
+    <br><br>
+    Think of it like this: the number 37 becomes an <em>angle</em> on each circle:
+    <strong>angle = (2π × frequency × 37) / 113</strong>
+</div>
+
+<div class="section">
+    <h3>The Embedding Circles — where numbers live:</h3>
+    <div class="controls">
+        <label>Number a =</label>
+        <input type="number" id="embed-a" value="37" min="0" max="112">
+        <label>Number b =</label>
+        <input type="number" id="embed-b" value="89" min="0" max="112">
+        <button onclick="drawEmbeddingCircles()">Update</button>
+    </div>
+    <div class="freq-legend" id="freq-legend"></div>
+    <canvas id="canvas-embedding-circles" width="900" height="400"></canvas>
+    <p style="text-align:center; color:#888; font-size:0.9em;">
+        Each circle represents one "key frequency" (k=14, 35, 41, 42, 52).
+        <br>The <span style="color:#667eea;">blue dot</span> is where number <b>a</b> lands. 
+        The <span style="color:#e91e63;">pink dot</span> is where number <b>b</b> lands.
+        <br>The (cos, sin) coordinates of each dot ARE the embedding values!
+    </p>
+
+    <div class="analogy-box">
+        <h4>🎯 Analogy: Clock Hands</h4>
+        <p>Imagine 5 clocks, each spinning at a different speed. When you say "37", each clock hand points to a specific angle. 
+        The position of all 5 hands together = the "embedding" of 37. Different numbers point the hands differently.</p>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PART 3: FROM CIRCLE POSITION TO SIN/COS VALUES -->
+<!-- ============================================================ -->
+<h2><span class="step-indicator">3</span> Reading Off the Coordinates: cos and sin</h2>
+
+<div class="big-idea">
+    Each point on a circle has two coordinates: <strong>cos(angle)</strong> = horizontal position, 
+    <strong>sin(angle)</strong> = vertical position. These are just numbers between -1 and +1.
+    <br><br>
+    So embedding number 37 at frequency k=14 means computing:
+    <br>• cos(2π × 14 × 37 / 113) = <em>some number</em>
+    <br>• sin(2π × 14 × 37 / 113) = <em>some other number</em>
+</div>
+
+<div class="section">
+    <h3>Interactive: See how the angle maps to sin/cos values</h3>
+    <div class="controls">
+        <label>Angle (drag!):</label>
+        <input type="range" id="angle-slider" min="0" max="628" value="200">
+        <span class="value-display" id="angle-display">θ = 2.00 rad</span>
+    </div>
+    <div class="canvas-row">
+        <canvas id="canvas-angle-circle" width="300" height="300"></canvas>
+        <canvas id="canvas-angle-bars" width="250" height="300"></canvas>
+    </div>
+    <p style="text-align:center; color:#888;">
+        Drag the slider to change the angle. Watch how cos (horizontal) and sin (vertical) change.
+        <br>These two numbers are what get stored in the embedding vector!
+    </p>
+</div>
+
+<!-- ============================================================ -->
+<!-- PART 4: THE MAGIC TRICK — ADDING ANGLES = ADDING NUMBERS -->
+<!-- ============================================================ -->
+<h2><span class="step-indicator">4</span> The Magic Trick: Adding Angles on Circles = Adding Numbers!</h2>
+
+<div class="big-idea">
+    Here's where it gets wild. The transformer needs to compute <strong>(a + b) mod 113</strong>.
+    <br><br>
+    On a circle, <em>adding two numbers</em> is the same as <em>adding their angles</em>!
+    <br>If a=37 is at angle θ₁ and b=89 is at angle θ₂, then (a+b)=126 is at angle θ₁ + θ₂.
+    <br><br>
+    And there's a formula for this (the "trig identity"):
+    <br><strong>cos(θ₁ + θ₂) = cos(θ₁)·cos(θ₂) − sin(θ₁)·sin(θ₂)</strong>
+    <br><strong>sin(θ₁ + θ₂) = sin(θ₁)·cos(θ₂) + cos(θ₁)·sin(θ₂)</strong>
+    <br><br>
+    The neural network <em>learned these formulas</em> in its weights! 🤯
+</div>
+
+<div class="section">
+    <h3>Watch the angles add up on each circle:</h3>
+    <div class="controls">
+        <label>a =</label>
+        <input type="number" id="add-a" value="37" min="0" max="112">
+        <label>b =</label>
+        <input type="number" id="add-b" value="89" min="0" max="112">
+        <button onclick="drawAdditionCircles()">Compute a + b</button>
+    </div>
+    <canvas id="canvas-addition" width="900" height="420"></canvas>
+    <div id="addition-result" style="text-align:center; font-size:1.3em; margin:15px 0; color:#4caf50;"></div>
+    <p style="text-align:center; color:#888; font-size:0.9em;">
+        <span style="color:#667eea;">Blue arc</span> = angle for a. 
+        <span style="color:#e91e63;">Pink arc</span> = angle for b (added on top).
+        <span style="color:#4caf50;">Green star ★</span> = combined angle (a+b).
+        <br>The green star's position gives us cos(ω·(a+b)) and sin(ω·(a+b))!
+    </p>
+</div>
+
+<!-- ============================================================ -->
+<!-- PART 5: FROM CIRCLES BACK TO WAVES — CONSTRUCTIVE INTERFERENCE -->
+<!-- ============================================================ -->
+<h2><span class="step-indicator">5</span> Multiple Circles → Multiple Waves → One Sharp Peak</h2>
+
+<div class="big-idea">
+    OK so we have 5 circles, each giving us cos(ωₖ·(a+b−c)) for every possible answer c.
+    <br><br>
+    Each single circle produces a <em>wavy</em> signal with many bumps. But when we <strong>add all 5 waves together</strong>,
+    something magical happens: all the waves line up (constructive interference) at exactly <em>one</em> point — 
+    the correct answer! Everywhere else, they cancel out (destructive interference).
+    <br><br>
+    It's like 5 people singing different notes — at one special spot, they all harmonize perfectly. 🎵
+</div>
+
+<div class="section">
+    <h3>See the waves from each circle, then watch them combine:</h3>
+    <div class="controls">
+        <label>a =</label>
+        <input type="number" id="wave-a" value="37" min="0" max="112">
+        <label>b =</label>
+        <input type="number" id="wave-b" value="89" min="0" max="112">
+        <button onclick="drawWaves()">Show Waves</button>
+        <button onclick="animateWaveSum()">▶ Animate Sum</button>
+    </div>
+    <canvas id="canvas-individual-waves" width="900" height="300"></canvas>
+    <p style="text-align:center; color:#888; font-size:0.9em;">
+        Each colored wave = one frequency's contribution. They all peak at the correct answer, but also have other bumps.
+    </p>
+    <div class="arrow-label">⬇ Add them all together ⬇</div>
+    <canvas id="canvas-sum-wave" width="900" height="250"></canvas>
+    <div id="wave-result" style="text-align:center; font-size:1.2em; margin:10px 0; color:#4caf50;"></div>
+    <p style="text-align:center; color:#888; font-size:0.9em;">
+        The sum has ONE dominant peak — that's the answer! The other bumps cancelled out.
+    </p>
+</div>
+
+<!-- ============================================================ -->
+<!-- PART 6: THE FULL PICTURE -->
+<!-- ============================================================ -->
+<h2><span class="step-indicator">6</span> The Full Picture: Circles → Sine Waves → Answer</h2>
+
+<div class="section">
+    <canvas id="canvas-full-pipeline" width="900" height="500"></canvas>
+    <div class="controls">
+        <label>a =</label>
+        <input type="number" id="full-a" value="37" min="0" max="112">
+        <label>b =</label>
+        <input type="number" id="full-b" value="89" min="0" max="112">
+        <button onclick="drawFullPipeline()">Run Full Pipeline</button>
+    </div>
+    <div id="full-result" style="text-align:center; font-size:1.4em; margin:15px 0;"></div>
+</div>
+
+<div class="big-idea" style="border-color: #4caf50;">
+    <strong style="color:#4caf50;">Summary — The whole algorithm:</strong>
+    <ol style="margin-top:10px; padding-left:20px; color:#ccc;">
+        <li><strong>Embed:</strong> Turn numbers into points on 5 circles (at 5 special frequencies)</li>
+        <li><strong>Read coordinates:</strong> Get sin/cos values from each circle position</li>
+        <li><strong>Add angles:</strong> Use trig identities to combine a's and b's circle positions → get (a+b)'s position</li>
+        <li><strong>Check all answers:</strong> For each possible answer c, compute cos(ω·(a+b−c)) on each circle</li>
+        <li><strong>Sum the waves:</strong> Add up all 5 frequencies → constructive interference at the RIGHT answer</li>
+        <li><strong>Pick the peak:</strong> The biggest value = the correct answer = (a+b) mod 113 ✓</li>
+    </ol>
+</div>
+
+</div><!-- end container -->
+
+<script>
+// =========================================================================
+// CONSTANTS
+// =========================================================================
+const P = 113;
+const KEY_FREQS = [14, 35, 41, 42, 52];
+const W_KEY = KEY_FREQS.map(k => 2 * Math.PI * k / P);
+const ALPHAS = [44.1, 42.2, 44.8, 66.6, 63.0];
+const COLORS = ['#667eea', '#e91e63', '#4caf50', '#ff9800', '#00bcd4'];
+
+// =========================================================================
+// PART 1: Circle to Sine Wave Animation
+// =========================================================================
+let anim1Running = true;
+let anim1Angle = 0;
+let anim1Trail = [];
+
+function toggleAnim1() { anim1Running = !anim1Running; }
+
+function drawCircleToSine() {
+    const canvas = document.getElementById('canvas-circle-to-sine');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    const speed = parseFloat(document.getElementById('speed1').value);
+    
+    ctx.clearRect(0, 0, W, H);
+    
+    // Circle parameters
+    const cx = 160, cy = H/2, r = 120;
+    
+    // Draw circle
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, 2*Math.PI);
+    ctx.strokeStyle = '#444';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Draw axes on circle
+    ctx.beginPath();
+    ctx.moveTo(cx - r - 20, cy);
+    ctx.lineTo(cx + r + 20, cy);
+    ctx.moveTo(cx, cy - r - 20);
+    ctx.lineTo(cx, cy + r + 20);
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    // Point on circle
+    const px = cx + r * Math.cos(anim1Angle);
+    const py = cy - r * Math.sin(anim1Angle); // flip y
+    
+    // Draw radius line
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(px, py);
+    ctx.strokeStyle = '#667eea';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Draw point
+    ctx.beginPath();
+    ctx.arc(px, py, 8, 0, 2*Math.PI);
+    ctx.fillStyle = '#667eea';
+    ctx.fill();
+    
+    // Draw sin projection (vertical line from point to x-axis)
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(px, cy);
+    ctx.strokeStyle = '#4caf5088';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4,4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    
+    // Draw cos projection (horizontal line from point to y-axis)
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(cx, py);
+    ctx.strokeStyle = '#ff980088';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4,4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    
+    // Labels on circle
+    ctx.fillStyle = '#4caf50';
+    ctx.font = '14px Segoe UI';
+    ctx.fillText('sin', cx + r + 5, cy - 5);
+    ctx.fillStyle = '#ff9800';
+    ctx.fillText('cos', cx + 5, cy - r - 8);
+    
+    // === SINE WAVE on the right ===
+    const waveStartX = 320;
+    const waveW = W - waveStartX - 30;
+    const waveH = r;
+    const waveCy = cy;
+    
+    // Add to trail
+    anim1Trail.push({ angle: anim1Angle, sin: Math.sin(anim1Angle) });
+    if (anim1Trail.length > 300) anim1Trail.shift();
+    
+    // Draw wave axis
+    ctx.beginPath();
+    ctx.moveTo(waveStartX, waveCy);
+    ctx.lineTo(waveStartX + waveW, waveCy);
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    // Draw sine wave trail
+    ctx.beginPath();
+    for (let i = 0; i < anim1Trail.length; i++) {
+        const x = waveStartX + (i / 300) * waveW;
+        const y = waveCy - anim1Trail[i].sin * waveH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = '#4caf50';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    
+    // Current point on wave
+    if (anim1Trail.length > 0) {
+        const lastIdx = anim1Trail.length - 1;
+        const wx = waveStartX + (lastIdx / 300) * waveW;
+        const wy = waveCy - anim1Trail[lastIdx].sin * waveH;
+        
+        ctx.beginPath();
+        ctx.arc(wx, wy, 6, 0, 2*Math.PI);
+        ctx.fillStyle = '#4caf50';
+        ctx.fill();
+        
+        // Connecting line (the "same value" line)
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(wx, wy);
+        ctx.strokeStyle = '#e91e63';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+    
+    // Labels
+    ctx.fillStyle = '#888';
+    ctx.font = '13px Segoe UI';
+    ctx.fillText('CIRCLE', cx - 25, cy + r + 35);
+    ctx.fillText('SINE WAVE (height over time →)', waveStartX + waveW/2 - 100, waveCy + waveH + 35);
+    
+    ctx.fillStyle = '#e91e63';
+    ctx.font = 'bold 12px Segoe UI';
+    ctx.fillText('same value!', (px + waveStartX)/2 - 20, py - 10);
+    
+    // Angle display
+    ctx.fillStyle = '#667eea';
+    ctx.font = 'bold 14px Courier New';
+    ctx.fillText(`θ = ${anim1Angle.toFixed(2)} rad`, cx - 40, cy + r + 55);
+    ctx.fillStyle = '#4caf50';
+    ctx.fillText(`sin(θ) = ${Math.sin(anim1Angle).toFixed(3)}`, cx + 60, cy + r + 55);
+    
+    if (anim1Running) {
+        anim1Angle += 0.02 * speed;
+        if (anim1Angle > 20 * Math.PI) {
+            anim1Angle = 0;
+            anim1Trail = [];
+        }
+    }
+    
+    requestAnimationFrame(drawCircleToSine);
+}
+
+// =========================================================================
+// PART 2: Embedding Circles
+// =========================================================================
+function drawEmbeddingCircles() {
+    const canvas = document.getElementById('canvas-embedding-circles');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    const a = parseInt(document.getElementById('embed-a').value) || 37;
+    const b = parseInt(document.getElementById('embed-b').value) || 89;
+    
+    ctx.clearRect(0, 0, W, H);
+    
+    const r = 70;
+    const spacing = W / (KEY_FREQS.length + 1);
+    
+    for (let i = 0; i < KEY_FREQS.length; i++) {
+        const cx = spacing * (i + 1);
+        const cy = H / 2;
+        const wk = W_KEY[i];
+        
+        // Draw circle
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, 2*Math.PI);
+        ctx.strokeStyle = '#444';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        
+        // Draw axes
+        ctx.beginPath();
+        ctx.moveTo(cx - r - 5, cy);
+        ctx.lineTo(cx + r + 5, cy);
+        ctx.moveTo(cx, cy - r - 5);
+        ctx.lineTo(cx, cy + r + 5);
+        ctx.strokeStyle = '#2a2a4a';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        
+        // Point for a
+        const angleA = wk * a;
+        const axA = cx + r * Math.cos(angleA);
+        const ayA = cy - r * Math.sin(angleA);
+        
+        // Draw arc for a
+        ctx.beginPath();
+        ctx.arc(cx, cy, r * 0.4, 0, -angleA, true);
+        ctx.strokeStyle = '#667eea88';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        // Draw point a
+        ctx.beginPath();
+        ctx.arc(axA, ayA, 7, 0, 2*Math.PI);
+        ctx.fillStyle = '#667eea';
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        
+        // Point for b
+        const angleB = wk * b;
+        const axB = cx + r * Math.cos(angleB);
+        const ayB = cy - r * Math.sin(angleB);
+        
+        // Draw point b
+        ctx.beginPath();
+        ctx.arc(axB, ayB, 7, 0, 2*Math.PI);
+        ctx.fillStyle = '#e91e63';
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        
+        // Labels
+        ctx.fillStyle = COLORS[i];
+        ctx.font = 'bold 14px Segoe UI';
+        ctx.textAlign = 'center';
+        ctx.fillText(`k = ${KEY_FREQS[i]}`, cx, cy + r + 25);
+        ctx.fillStyle = '#888';
+        ctx.font = '11px Segoe UI';
+        ctx.fillText(`ω = ${wk.toFixed(2)}`, cx, cy + r + 42);
+        
+        // Show cos/sin values
+        ctx.fillStyle = '#667eea';
+        ctx.font = '10px Courier New';
+        ctx.fillText(`a: (${Math.cos(angleA).toFixed(2)}, ${Math.sin(angleA).toFixed(2)})`, cx, cy - r - 20);
+        ctx.fillStyle = '#e91e63';
+        ctx.fillText(`b: (${Math.cos(angleB).toFixed(2)}, ${Math.sin(angleB).toFixed(2)})`, cx, cy - r - 6);
+    }
+    
+    // Legend
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#667eea';
+    ctx.font = 'bold 13px Segoe UI';
+    ctx.fillText(`● a = ${a}`, 20, 25);
+    ctx.fillStyle = '#e91e63';
+    ctx.fillText(`● b = ${b}`, 20, 45);
+    ctx.fillStyle = '#888';
+    ctx.font = '12px Segoe UI';
+    ctx.fillText('Coordinates shown as (cos, sin)', 20, 65);
+}
+
+// =========================================================================
+// PART 3: Angle to Sin/Cos Interactive
+// =========================================================================
+function drawAngleCircle() {
+    const canvas = document.getElementById('canvas-angle-circle');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    const angle = parseInt(document.getElementById('angle-slider').value) / 100;
+    
+    document.getElementById('angle-display').textContent = `θ = ${angle.toFixed(2)} rad`;
+    
+    ctx.clearRect(0, 0, W, H);
+    
+    const cx = W/2, cy = H/2, r = 110;
+    
+    // Draw circle
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, 2*Math.PI);
+    ctx.strokeStyle = '#444';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Draw axes
+    ctx.beginPath();
+    ctx.moveTo(cx - r - 15, cy);
+    ctx.lineTo(cx + r + 15, cy);
+    ctx.moveTo(cx, cy - r - 15);
+    ctx.lineTo(cx, cy + r + 15);
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    // Axis labels
+    ctx.fillStyle = '#666';
+    ctx.font = '11px Segoe UI';
+    ctx.textAlign = 'center';
+    ctx.fillText('cos', cx + r + 12, cy + 15);
+    ctx.fillText('sin', cx + 12, cy - r - 5);
+    ctx.fillText('1', cx + r + 5, cy - 5);
+    ctx.fillText('-1', cx - r - 10, cy - 5);
+    
+    // Point on circle
+    const px = cx + r * Math.cos(angle);
+    const py = cy - r * Math.sin(angle);
+    
+    // Draw angle arc
+    ctx.beginPath();
+    ctx.arc(cx, cy, 30, 0, -angle, angle > 0);
+    ctx.strokeStyle = '#667eea88';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    
+    // Draw radius
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(px, py);
+    ctx.strokeStyle = '#667eea';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Draw cos projection (horizontal)
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(px, cy);
+    ctx.strokeStyle = '#ff9800';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    
+    // Draw sin projection (vertical)
+    ctx.beginPath();
+    ctx.moveTo(px, cy);
+    ctx.lineTo(px, py);
+    ctx.strokeStyle = '#4caf50';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    
+    // Draw point
+    ctx.beginPath();
+    ctx.arc(px, py, 8, 0, 2*Math.PI);
+    ctx.fillStyle = '#667eea';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Labels
+    ctx.fillStyle = '#ff9800';
+    ctx.font = 'bold 13px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText(`cos = ${Math.cos(angle).toFixed(3)}`, cx + (px - cx)/2, cy + 20);
+    
+    ctx.fillStyle = '#4caf50';
+    ctx.fillText(`sin = ${Math.sin(angle).toFixed(3)}`, px + 40, cy + (py - cy)/2);
+    
+    ctx.fillStyle = '#667eea';
+    ctx.font = '12px Segoe UI';
+    ctx.fillText(`θ`, cx + 20, cy - 10);
+}
+
+function drawAngleBars() {
+    const canvas = document.getElementById('canvas-angle-bars');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    const angle = parseInt(document.getElementById('angle-slider').value) / 100;
+    
+    ctx.clearRect(0, 0, W, H);
+    
+    const cosVal = Math.cos(angle);
+    const sinVal = Math.sin(angle);
+    
+    const barW = 60;
+    const maxBarH = 100;
+    const baseY = H / 2;
+    
+    // Cos bar
+    const cosBarH = cosVal * maxBarH;
+    const cosX = W/2 - barW - 15;
+    ctx.fillStyle = cosVal >= 0 ? '#ff9800' : '#ff980066';
+    ctx.fillRect(cosX, baseY - Math.max(0, cosBarH), barW, Math.abs(cosBarH));
+    ctx.strokeStyle = '#ff9800';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(cosX, baseY - Math.max(0, cosBarH), barW, Math.abs(cosBarH));
+    
+    // Sin bar
+    const sinBarH = sinVal * maxBarH;
+    const sinX = W/2 + 15;
+    ctx.fillStyle = sinVal >= 0 ? '#4caf50' : '#4caf5066';
+    ctx.fillRect(sinX, baseY - Math.max(0, sinBarH), barW, Math.abs(sinBarH));
+    ctx.strokeStyle = '#4caf50';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(sinX, baseY - Math.max(0, sinBarH), barW, Math.abs(sinBarH));
+    
+    // Zero line
+    ctx.beginPath();
+    ctx.moveTo(20, baseY);
+    ctx.lineTo(W - 20, baseY);
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    
+    // +1 / -1 lines
+    ctx.beginPath();
+    ctx.moveTo(20, baseY - maxBarH);
+    ctx.lineTo(W - 20, baseY - maxBarH);
+    ctx.moveTo(20, baseY + maxBarH);
+    ctx.lineTo(W - 20, baseY + maxBarH);
+    ctx.strokeStyle = '#333';
+    ctx.stroke();
+    
+    // Labels
+    ctx.fillStyle = '#888';
+    ctx.font = '11px Segoe UI';
+    ctx.textAlign = 'center';
+    ctx.fillText('+1', 15, baseY - maxBarH + 4);
+    ctx.fillText('-1', 15, baseY + maxBarH + 4);
+    ctx.fillText('0', 15, baseY + 4);
+    
+    ctx.fillStyle = '#ff9800';
+    ctx.font = 'bold 14px Segoe UI';
+    ctx.fillText('cos', cosX + barW/2, H - 20);
+    ctx.font = '13px Courier New';
+    ctx.fillText(cosVal.toFixed(3), cosX + barW/2, H - 5);
+    
+    ctx.fillStyle = '#4caf50';
+    ctx.font = 'bold 14px Segoe UI';
+    ctx.fillText('sin', sinX + barW/2, H - 20);
+    ctx.font = '13px Courier New';
+    ctx.fillText(sinVal.toFixed(3), sinX + barW/2, H - 5);
+    
+    // Title
+    ctx.fillStyle = '#aaa';
+    ctx.font = '12px Segoe UI';
+    ctx.fillText('Embedding values', W/2, 20);
+}
+
+document.getElementById('angle-slider').addEventListener('input', () => {
+    drawAngleCircle();
+    drawAngleBars();
+});
+
+// =========================================================================
+// PART 4: Addition on Circles
+// =========================================================================
+function drawAdditionCircles() {
+    const canvas = document.getElementById('canvas-addition');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    const a = parseInt(document.getElementById('add-a').value) || 37;
+    const b = parseInt(document.getElementById('add-b').value) || 89;
+    const trueC = (a + b) % P;
+    
+    ctx.clearRect(0, 0, W, H);
+    
+    const r = 75;
+    const spacing = W / (KEY_FREQS.length + 1);
+    
+    for (let i = 0; i < KEY_FREQS.length; i++) {
+        const cx = spacing * (i + 1);
+        const cy = H / 2;
+        const wk = W_KEY[i];
+        
+        const angleA = wk * a;
+        const angleB = wk * b;
+        const angleAB = wk * (a + b);
+        
+        // Draw circle
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, 2*Math.PI);
+        ctx.strokeStyle = '#444';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        
+        // Draw axes
+        ctx.beginPath();
+        ctx.moveTo(cx - r - 5, cy);
+        ctx.lineTo(cx + r + 5, cy);
+        ctx.moveTo(cx, cy - r - 5);
+        ctx.lineTo(cx, cy + r + 5);
+        ctx.strokeStyle = '#2a2a4a';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        
+        // Draw arc for angle A (from 0)
+        ctx.beginPath();
+        ctx.moveTo(cx + r * 0.5, cy);
+        ctx.arc(cx, cy, r * 0.5, 0, -angleA % (2*Math.PI), true);
+        ctx.strokeStyle = '#667eea';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        // Draw arc for angle B (from angle A)
+        ctx.beginPath();
+        const startAngle = -angleA % (2*Math.PI);
+        const endAngle = -(angleA + angleB) % (2*Math.PI);
+        ctx.arc(cx, cy, r * 0.65, startAngle, endAngle, true);
+        ctx.strokeStyle = '#e91e63';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        // Point for a
+        const axA = cx + r * Math.cos(angleA);
+        const ayA = cy - r * Math.sin(angleA);
+        ctx.beginPath();
+        ctx.arc(axA, ayA, 5, 0, 2*Math.PI);
+        ctx.fillStyle = '#667eea';
+        ctx.fill();
+        
+        // Point for a+b (the result!)
+        const axAB = cx + r * Math.cos(angleAB);
+        const ayAB = cy - r * Math.sin(angleAB);
+        
+        // Draw star for a+b
+        drawStar(ctx, axAB, ayAB, 5, 10, 5);
+        ctx.fillStyle = '#4caf50';
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        
+        // Labels
+        ctx.fillStyle = COLORS[i];
+        ctx.font = 'bold 13px Segoe UI';
+        ctx.textAlign = 'center';
+        ctx.fillText(`k = ${KEY_FREQS[i]}`, cx, cy + r + 22);
+        
+        // Show the combined angle value
+        ctx.fillStyle = '#4caf50';
+        ctx.font = '10px Courier New';
+        const cosAB = Math.cos(angleAB);
+        const sinAB = Math.sin(angleAB);
+        ctx.fillText(`(${cosAB.toFixed(2)}, ${sinAB.toFixed(2)})`, cx, cy + r + 38);
+    }
+    
+    // Legend
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#667eea';
+    ctx.font = 'bold 12px Segoe UI';
+    ctx.fillText(`● Blue arc: angle for a=${a}`, 20, 25);
+    ctx.fillStyle = '#e91e63';
+    ctx.fillText(`● Pink arc: angle for b=${b} (added on top)`, 20, 42);
+    ctx.fillStyle = '#4caf50';
+    ctx.fillText(`★ Green star: combined angle for a+b=${a+b} (mod ${P} = ${trueC})`, 20, 59);
+    
+    document.getElementById('addition-result').innerHTML = 
+        `<span style="color:#667eea;">${a}</span> + <span style="color:#e91e63;">${b}</span> = ${a+b} ≡ <span style="color:#4caf50; font-weight:bold;">${trueC}</span> (mod ${P})`;
+}
+
+function drawStar(ctx, cx, cy, innerR, outerR, points) {
+    ctx.beginPath();
+    for (let i = 0; i < points * 2; i++) {
+        const r = i % 2 === 0 ? outerR : innerR;
+        const angle = (i * Math.PI) / points - Math.PI / 2;
+        const x = cx + r * Math.cos(angle);
+        const y = cy + r * Math.sin(angle);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+}
+
+// =========================================================================
+// PART 5: Individual Waves and Sum
+// =========================================================================
+function drawWaves() {
+    const canvas = document.getElementById('canvas-individual-waves');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    const a = parseInt(document.getElementById('wave-a').value) || 37;
+    const b = parseInt(document.getElementById('wave-b').value) || 89;
+    const trueC = (a + b) % P;
+    
+    ctx.clearRect(0, 0, W, H);
+    
+    const padL = 50, padR = 20, padT = 30, padB = 40;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+    const baseY = padT + plotH / 2;
+    
+    // Draw axes
+    ctx.beginPath();
+    ctx.moveTo(padL, baseY);
+    ctx.lineTo(W - padR, baseY);
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    // Draw vertical line at correct answer
+    const correctX = padL + (trueC / (P - 1)) * plotW;
+    ctx.beginPath();
+    ctx.moveTo(correctX, padT);
+    ctx.lineTo(correctX, padT + plotH);
+    ctx.strokeStyle = '#4caf5044';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    
+    // Draw each frequency's wave
+    const maxAmp = Math.max(...ALPHAS);
+    for (let i = 0; i < KEY_FREQS.length; i++) {
+        const wk = W_KEY[i];
+        ctx.beginPath();
+        for (let c = 0; c < P; c++) {
+            const val = ALPHAS[i] * Math.cos(wk * (a + b - c));
+            const x = padL + (c / (P - 1)) * plotW;
+            const y = baseY - (val / maxAmp) * (plotH / 2) * 0.8;
+            if (c === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = COLORS[i];
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.7;
+        ctx.stroke();
+        ctx.globalAlpha = 1.0;
+    }
+    
+    // Legend
+    ctx.textAlign = 'left';
+    for (let i = 0; i < KEY_FREQS.length; i++) {
+        ctx.fillStyle = COLORS[i];
+        ctx.font = '11px Segoe UI';
+        ctx.fillText(`k=${KEY_FREQS[i]}`, padL + i * 90, padT - 10);
+    }
+    
+    // Correct answer label
+    ctx.fillStyle = '#4caf50';
+    ctx.font = 'bold 12px Segoe UI';
+    ctx.textAlign = 'center';
+    ctx.fillText(`c*=${trueC}`, correctX, padT + plotH + 20);
+    
+    // X axis labels
+    ctx.fillStyle = '#888';
+    ctx.font = '10px Segoe UI';
+    ctx.fillText('0', padL, padT + plotH + 15);
+    ctx.fillText('56', padL + plotW/2, padT + plotH + 15);
+    ctx.fillText('112', padL + plotW, padT + plotH + 15);
+    ctx.textAlign = 'right';
+    ctx.fillText('candidate c →', W - padR, padT + plotH + 35);
+    
+    // Now draw the sum
+    drawSumWave(a, b, trueC);
+}
+
+let waveSumAnimFrame = 0;
+let waveSumAnimRunning = false;
+
+function drawSumWave(a, b, trueC) {
+    const canvas = document.getElementById('canvas-sum-wave');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    
+    if (a === undefined) a = parseInt(document.getElementById('wave-a').value) || 37;
+    if (b === undefined) b = parseInt(document.getElementById('wave-b').value) || 89;
+    if (trueC === undefined) trueC = (a + b) % P;
+    
+    ctx.clearRect(0, 0, W, H);
+    
+    const padL = 50, padR = 20, padT = 20, padB = 40;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+    const baseY = padT + plotH / 2;
+    
+    // Compute sum of all waves
+    const sumWave = [];
+    let maxVal = 0;
+    for (let c = 0; c < P; c++) {
+        let sum = 0;
+        for (let i = 0; i < KEY_FREQS.length; i++) {
+            sum += ALPHAS[i] * Math.cos(W_KEY[i] * (a + b - c));
+        }
+        sumWave.push(sum);
+        maxVal = Math.max(maxVal, Math.abs(sum));
+    }
+    
+    // Draw zero line
+    ctx.beginPath();
+    ctx.moveTo(padL, baseY);
+    ctx.lineTo(W - padR, baseY);
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    // Draw bars for sum
+    const barW = plotW / P * 0.8;
+    for (let c = 0; c < P; c++) {
+        const x = padL + (c / (P - 1)) * plotW - barW/2;
+        const barH = (sumWave[c] / maxVal) * (plotH / 2) * 0.9;
+        const color = c === trueC ? '#4caf50' : (sumWave[c] > 0 ? '#764ba2' : '#333');
+        ctx.fillStyle = color;
+        if (barH >= 0) {
+            ctx.fillRect(x, baseY - barH, barW, barH);
+        } else {
+            ctx.fillRect(x, baseY, barW, -barH);
+        }
+    }
+    
+    // Highlight correct answer
+    const correctX = padL + (trueC / (P - 1)) * plotW;
+    ctx.beginPath();
+    ctx.moveTo(correctX, padT);
+    ctx.lineTo(correctX, padT + plotH);
+    ctx.strokeStyle = '#4caf50';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    
+    // Labels
+    ctx.fillStyle = '#4caf50';
+    ctx.font = 'bold 13px Segoe UI';
+    ctx.textAlign = 'center';
+    ctx.fillText(`★ c*=${trueC} (peak = ${sumWave[trueC].toFixed(1)})`, correctX, padT - 3);
+    
+    ctx.fillStyle = '#888';
+    ctx.font = '10px Segoe UI';
+    ctx.fillText('0', padL, padT + plotH + 15);
+    ctx.fillText('112', padL + plotW, padT + plotH + 15);
+    ctx.textAlign = 'right';
+    ctx.fillText('candidate c →', W - padR, padT + plotH + 35);
+    
+    document.getElementById('wave-result').innerHTML = 
+        `Sum of all 5 frequencies peaks at <span style="color:#4caf50; font-weight:bold;">c* = ${trueC}</span> with value ${sumWave[trueC].toFixed(1)} (sum of all α's = ${ALPHAS.reduce((s,v)=>s+v,0).toFixed(1)})`;
+}
+
+function animateWaveSum() {
+    // Just redraw with current values
+    const a = parseInt(document.getElementById('wave-a').value) || 37;
+    const b = parseInt(document.getElementById('wave-b').value) || 89;
+    drawWaves();
+}
+
+// =========================================================================
+// PART 6: Full Pipeline Visualization
+// =========================================================================
+function drawFullPipeline() {
+    const canvas = document.getElementById('canvas-full-pipeline');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    const a = parseInt(document.getElementById('full-a').value) || 37;
+    const b = parseInt(document.getElementById('full-b').value) || 89;
+    const trueC = (a + b) % P;
+    
+    ctx.clearRect(0, 0, W, H);
+    
+    // Layout: 3 rows
+    // Row 1: Embedding circles for a and b
+    // Row 2: Arrow + combined circles
+    // Row 3: Sum wave with peak
+    
+    const rowH = H / 3;
+    
+    // === ROW 1: Embedding ===
+    ctx.fillStyle = '#667eea';
+    ctx.font = 'bold 16px Segoe UI';
+    ctx.textAlign = 'left';
+    ctx.fillText(`① Embed a=${a} and b=${b} on circles:`, 15, 25);
+    
+    const r1 = 40;
+    const circleY1 = 75;
+    const startX = 80;
+    const gap = 160;
+    
+    for (let i = 0; i < KEY_FREQS.length; i++) {
+        const cx = startX + i * gap;
+        const wk = W_KEY[i];
+        
+        // Circle
+        ctx.beginPath();
+        ctx.arc(cx, circleY1, r1, 0, 2*Math.PI);
+        ctx.strokeStyle = '#444';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        
+        // Point a
+        const angleA = wk * a;
+        ctx.beginPath();
+        ctx.arc(cx + r1*Math.cos(angleA), circleY1 - r1*Math.sin(angleA), 4, 0, 2*Math.PI);
+        ctx.fillStyle = '#667eea';
+        ctx.fill();
+        
+        // Point b
+        const angleB = wk * b;
+        ctx.beginPath();
+        ctx.arc(cx + r1*Math.cos(angleB), circleY1 - r1*Math.sin(angleB), 4, 0, 2*Math.PI);
+        ctx.fillStyle = '#e91e63';
+        ctx.fill();
+        
+        ctx.fillStyle = COLORS[i];
+        ctx.font = '10px Segoe UI';
+        ctx.textAlign = 'center';
+        ctx.fillText(`k=${KEY_FREQS[i]}`, cx, circleY1 + r1 + 14);
+    }
+    
+    // === ROW 2: Combined ===
+    const row2Y = rowH + 20;
+    ctx.fillStyle = '#ff9800';
+    ctx.font = 'bold 16px Segoe UI';
+    ctx.textAlign = 'left';
+    ctx.fillText(`② Add angles → get (a+b) position:`, 15, row2Y);
+    
+    const circleY2 = row2Y + 55;
+    
+    for (let i = 0; i < KEY_FREQS.length; i++) {
+        const cx = startX + i * gap;
+        const wk = W_KEY[i];
+        const angleAB = wk * (a + b);
+        
+        // Circle
+        ctx.beginPath();
+        ctx.arc(cx, circleY2, r1, 0, 2*Math.PI);
+        ctx.strokeStyle = '#444';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        
+        // Star for a+b
+        drawStar(ctx, cx + r1*Math.cos(angleAB), circleY2 - r1*Math.sin(angleAB), 3, 7, 5);
+        ctx.fillStyle = '#4caf50';
+        ctx.fill();
+        
+        ctx.fillStyle = COLORS[i];
+        ctx.font = '10px Segoe UI';
+        ctx.textAlign = 'center';
+        ctx.fillText(`k=${KEY_FREQS[i]}`, cx, circleY2 + r1 + 14);
+    }
+    
+    // === ROW 3: Sum wave ===
+    const row3Y = 2 * rowH + 10;
+    ctx.fillStyle = '#4caf50';
+    ctx.font = 'bold 16px Segoe UI';
+    ctx.textAlign = 'left';
+    ctx.fillText(`③ Sum cos waves → peak at answer:`, 15, row3Y);
+    
+    const waveY = row3Y + 30;
+    const waveH2 = H - waveY - 20;
+    const waveBaseY = waveY + waveH2 / 2;
+    const padL = 60, padR = 20;
+    const plotW = W - padL - padR;
+    
+    // Compute sum
+    const sumWave = [];
+    let maxVal = 0;
+    for (let c = 0; c < P; c++) {
+        let sum = 0;
+        for (let i = 0; i < KEY_FREQS.length; i++) {
+            sum += ALPHAS[i] * Math.cos(W_KEY[i] * (a + b - c));
+        }
+        sumWave.push(sum);
+        maxVal = Math.max(maxVal, Math.abs(sum));
+    }
+    
+    // Draw zero line
+    ctx.beginPath();
+    ctx.moveTo(padL, waveBaseY);
+    ctx.lineTo(W - padR, waveBaseY);
+    ctx.strokeStyle = '#444';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    // Draw wave as line
+    ctx.beginPath();
+    for (let c = 0; c < P; c++) {
+        const x = padL + (c / (P-1)) * plotW;
+        const y = waveBaseY - (sumWave[c] / maxVal) * (waveH2/2) * 0.85;
+        if (c === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = '#764ba2';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Highlight peak
+    const peakX = padL + (trueC / (P-1)) * plotW;
+    const peakY = waveBaseY - (sumWave[trueC] / maxVal) * (waveH2/2) * 0.85;
+    ctx.beginPath();
+    ctx.arc(peakX, peakY, 8, 0, 2*Math.PI);
+    ctx.fillStyle = '#4caf50';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    ctx.fillStyle = '#4caf50';
+    ctx.font = 'bold 13px Segoe UI';
+    ctx.textAlign = 'center';
+    ctx.fillText(`c*=${trueC}`, peakX, peakY - 15);
+    
+    document.getElementById('full-result').innerHTML = 
+        `<span style="color:#667eea;">${a}</span> + <span style="color:#e91e63;">${b}</span> mod ${P} = <span style="color:#4caf50; font-size:1.5em; font-weight:bold;">${trueC}</span> ✓`;
+}
+
+// =========================================================================
+// INITIALIZATION
+// =========================================================================
+window.addEventListener('DOMContentLoaded', () => {
+    // Start circle-to-sine animation
+    drawCircleToSine();
+    
+    // Draw embedding circles
+    drawEmbeddingCircles();
+    
+    // Draw angle interactive
+    drawAngleCircle();
+    drawAngleBars();
+    
+    // Draw addition circles
+    drawAdditionCircles();
+    
+    // Draw waves
+    drawWaves();
+    
+    // Draw full pipeline
+    drawFullPipeline();
+    
+    // Build frequency legend
+    const legendEl = document.getElementById('freq-legend');
+    KEY_FREQS.forEach((k, i) => {
+        legendEl.innerHTML += `<span><span class="color-dot" style="background:${COLORS[i]}"></span>k=${k} (ω=${W_KEY[i].toFixed(2)})</span>`;
+    });
+});
+</script>
+</body>
+</html>
